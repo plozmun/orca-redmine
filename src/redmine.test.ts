@@ -128,3 +128,24 @@ test('filters issues by status; unknown values mean open', async () => {
     ['3', 'closed', '*', 'open']
   )
 })
+
+test('my time entries on a task, newest first', async () => {
+  const { calls, impl } = fakeFetch({
+    '/time_entries.json': {
+      body: {
+        time_entries: [
+          { id: 1, hours: 1.5, comments: 'Review', spent_on: '2026-11-01', activity: { name: 'Development' }, user: { name: 'Pablo' } },
+          { id: 2, hours: '2', comments: '', spent_on: '2026-11-03', activity: { name: 'Testing' }, user: { name: 'Pablo' } }
+        ]
+      }
+    }
+  })
+  const entries = await new RedmineClient('https://redmine.test', 'KEY', impl).myTimeEntries(4321)
+  const params = new URL(calls[0].url).searchParams
+  assert.equal(params.get('issue_id'), '4321')
+  assert.equal(params.get('user_id'), 'me')
+  assert.deepEqual(entries.map((e) => [e.id, e.hours, e.spentOn, e.activity]), [
+    [2, 2, '2026-11-03', 'Testing'],
+    [1, 1.5, '2026-11-01', 'Development']
+  ])
+})

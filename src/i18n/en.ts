@@ -21,7 +21,6 @@ export const en = {
   // Section headers
   'section.tasks': 'Tasks',
   'section.agent': 'Agent',
-  'section.activity': 'Activity',
 
   // Workspace card
   'workspace.none': 'No focused workspace: showing tasks from every project.',
@@ -68,6 +67,9 @@ export const en = {
   'issue.unassign': 'Unassign',
   'issue.assign': 'Assign to this workspace',
   'issue.assignReplacing': 'Assign to this workspace (replaces #{id})',
+  'tabs.label': 'Task sections',
+  'tabs.time': 'Time',
+  'tabs.activity': 'Comments ({count})',
   'issue.status': 'Status',
   'issue.project': 'Project',
   'issue.assignee': 'Assignee',
@@ -116,13 +118,17 @@ export const en = {
   'send.rejected': 'The terminal did not accept the text',
 
   // Time and comments
-  'time.title': 'Log time',
   'time.hours': 'Hours',
   'time.comment': 'Comment',
+  'time.mine': 'My time',
+  'time.hours.value': '{hours} h',
+  'time.loading': 'Loading time entries',
+  'time.none': 'You have not logged time on this task yet.',
   'time.submit': 'Log',
   'time.done': '{hours} h logged on #{id}',
   'comment.title': 'Comment',
   'comment.label': 'Comment',
+  'comment.placeholder': 'Write a comment…',
   'comment.submit': 'Add comment',
   'comment.done': 'Comment added',
   'status.done': 'Status updated',

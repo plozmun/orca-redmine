@@ -39,6 +39,9 @@ function connectedHost(
         return { issues: [summary], total: 1 }
       },
       'redmine.issue': () => detail,
+      'redmine.timeEntries': () => [
+        { id: 9, hours: 1.5, comments: 'Review', spentOn: '2026-11-02', activity: 'Development', user: 'Pablo' }
+      ],
       'redmine.statuses': () => [
         { id: 1, name: 'New', isClosed: false },
         { id: 2, name: 'In progress', isClosed: false }
@@ -354,5 +357,58 @@ test('the list can be filtered by status, and the choice is kept', async () => {
 
   await view.press({ label: 'Show open tasks' })
   assert.deepEqual(asked.at(-1), { mine: true, search: '' })
+  await view.unmount()
+})
+
+test('the detail has tabs: description first, then comments with the reply box', async () => {
+  const asked: unknown[] = []
+  const withComments = {
+    ...detail,
+    journals: [{ id: 1, author: 'Luis', createdOn: '2026-11-01T10:00:00Z', notes: 'Design ready' }]
+  }
+  const view = await mount(panel, {
+    host: connectedHost(asked, {
+      'redmine.issue': (() => withComments) as never,
+      'redmine.comment': ((input: unknown) => {
+        asked.push({ comment: input })
+        return withComments
+      }) as never
+    }),
+    locale: 'en'
+  })
+  await view.press({ type: 'ListItem' })
+  assert.equal(view.valueOf({ type: 'Tabs' }), 'description')
+  assert.ok(drawn(view, 'Integrate **Stripe**'))
+
+  await view.select({ type: 'Tabs' }, 'activity')
+  assert.ok(drawn(view, 'Design ready'))
+  await view.type({ label: 'Comment' }, 'Merged in !42')
+  await view.press({ text: 'Add comment' })
+  assert.deepEqual(asked.at(-1), { comment: { id: 4077, notes: 'Merged in !42' } })
+  assert.ok(view.find({ text: 'Comment added' }))
+  await view.unmount()
+})
+
+test('the Time tab lists my entries with their total and logs new time', async () => {
+  const asked: unknown[] = []
+  const view = await mount(panel, {
+    host: connectedHost(asked, {
+      'redmine.logTime': ((input: unknown) => {
+        asked.push({ logTime: input })
+        return { timeEntryId: 10 }
+      }) as never
+    }),
+    locale: 'en'
+  })
+  await view.press({ type: 'ListItem' })
+  await view.select({ type: 'Tabs' }, 'time')
+  assert.ok(drawn(view, 'Review'))
+  assert.ok(drawn(view, '1.5 h'))
+  await view.type({ label: 'Hours' }, '2,5')
+  await view.type({ label: 'Comment' }, 'Checkout API')
+  await view.press({ text: 'Log' })
+  assert.deepEqual(asked.at(-1), { logTime: { id: 4077, hours: 2.5, comments: 'Checkout API' } })
+  assert.ok(view.find({ text: '2.5 h logged on #4077' }))
+  assert.deepEqual(view.errors, [])
   await view.unmount()
 })

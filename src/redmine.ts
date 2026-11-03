@@ -34,6 +34,16 @@ export interface IssueStatus {
   isClosed: boolean
 }
 
+export interface TimeEntry {
+  id: number
+  hours: number
+  comments: string
+  /** Day the time was spent, `YYYY-MM-DD`. */
+  spentOn: string
+  activity: string
+  user: string
+}
+
 export interface RedmineUser {
   id: number
   login: string
@@ -239,5 +249,21 @@ export class RedmineClient {
       time_entry: { issue_id: id, hours, comments }
     })
     return time_entry.id
+  }
+
+  /** The current user's time entries on a task, newest first (at most 100). */
+  async myTimeEntries(issueId: number): Promise<TimeEntry[]> {
+    const params = new URLSearchParams({ issue_id: String(issueId), user_id: 'me', limit: '100' })
+    const data = await this.call('GET', `/time_entries.json?${params}`)
+    return (data.time_entries ?? [])
+      .map((e: any) => ({
+        id: e.id,
+        hours: Number(e.hours) || 0,
+        comments: e.comments ?? '',
+        spentOn: e.spent_on ?? '',
+        activity: e.activity?.name ?? '',
+        user: e.user?.name ?? ''
+      }))
+      .sort((a: TimeEntry, b: TimeEntry) => b.spentOn.localeCompare(a.spentOn) || b.id - a.id)
   }
 }

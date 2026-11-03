@@ -3,7 +3,7 @@
 // panel translates them with src/i18n; `*Detail` fields carry untranslated detail.
 import type { CommentsMode } from './launch'
 import type { CreatedWorktree, LocatedWorkspace } from './orca-workspaces'
-import type { IssueDetail, IssueStatus, IssueSummary, Project } from './redmine'
+import type { IssueDetail, IssueStatus, IssueSummary, Project, TimeEntry } from './redmine'
 
 export interface ConnectionStatus {
   configured: boolean
@@ -38,6 +38,8 @@ declare module 'orca' {
     'redmine.setStatus': { input: { id: number; statusId: number }; output: IssueDetail }
     'redmine.comment': { input: { id: number; notes: string }; output: IssueDetail }
     'redmine.logTime': { input: { id: number; hours: number; comments: string }; output: { timeEntryId: number } }
+    /** The current user's time entries on a task. */
+    'redmine.timeEntries': { input: { id: number }; output: TimeEntry[] }
     /** Orca projects (repositories) a workspace can be created in. */
     'redmine.orcaProjects': { output: { id: string; name: string }[] }
     /** Creates a new workspace for the task and, when asked, launches an agent with its context. */

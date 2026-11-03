@@ -144,6 +144,8 @@ export default function activate(orca: OrcaWorkerApi): void {
     return { timeEntryId }
   })
 
+  orca.panels.handle('redmine.timeEntries', async ({ id }) => (await client(orca)).myTimeEntries(id))
+
   orca.panels.handle('redmine.orcaProjects', async () =>
     (await orcaLister()).projects
       .map((p) => ({ id: p.id, name: p.displayName ?? p.id }))

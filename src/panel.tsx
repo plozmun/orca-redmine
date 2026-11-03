@@ -33,6 +33,8 @@ import {
   Spinner,
   Stack,
   Switch,
+  Tab,
+  Tabs,
   Text,
   Textarea,
   update,
@@ -44,7 +46,7 @@ import { asCommentsMode, defaultInstructions, RECENT_COMMENTS, workspaceNameFor,
 import type { LocatedWorkspace } from './orca-workspaces'
 import type { ConnectionStatus } from './protocol'
 import { textileToMarkdown } from './textile'
-import { issueIdFromBranch, type IssueDetail, type IssueStatus, type IssueSummary, type Project } from './redmine'
+import { issueIdFromBranch, type IssueDetail, type IssueStatus, type IssueSummary, type Project, type TimeEntry } from './redmine'
 
 function t(key: MessageKey, vars?: Record<string, string | number>): string {
   return translate(env.locale, key, vars)
@@ -84,6 +86,15 @@ const projects = atom<Project[]>([])
 const detail = atom<IssueDetail | null>(null)
 const workspace = atom<WorkspaceInfo | null>(null)
 const busy = atom(false)
+/** The detail's tab; a newly opened task starts on its description. */
+type DetailTab = 'description' | 'activity' | 'time'
+const detailTab = atom<DetailTab>('description')
+function asDetailTab(value: string): DetailTab {
+  return value === 'activity' || value === 'time' ? value : 'description'
+}
+/** The current user's time entries on the open task; null while loading. */
+const timeEntries = atom<TimeEntry[] | null>(null)
+const timeEntriesError = atom<string | null>(null)
 /** Opening the focused workspace's task: the panel shows a spinner instead of the list. */
 const issueLoading = atom(false)
 
@@ -259,9 +270,25 @@ async function openIssue(id: number): Promise<void> {
       set(launchComments, read(defaultComments))
       set(launchProject, suggestedOrcaProject(issue))
       set(launchBase, '')
+      set(detailTab, 'description')
+      set(timeEntries, null)
     }
     set(detail, issue)
+    void loadTimeEntries(id)
   })
+}
+
+async function loadTimeEntries(id: number): Promise<void> {
+  set(timeEntriesError, null)
+  try {
+    const entries = await plugin.request('redmine.timeEntries', { id })
+    if (read(detail)?.id === id) set(timeEntries, entries)
+  } catch (e) {
+    if (read(detail)?.id === id) {
+      set(timeEntries, [])
+      set(timeEntriesError, errorText(e))
+    }
+  }
 }
 
 function closeIssue(): void {
@@ -323,6 +350,7 @@ function logTime(issue: IssueDetail): Promise<void> {
     set(hours, '')
     set(timeComment, '')
     set(notice, t('time.done', { hours: value, id: issue.id }))
+    await loadTimeEntries(issue.id)
   })
 }
 
@@ -863,6 +891,81 @@ function LaunchSection({ issue }: { issue: IssueDetail }) {
   )
 }
 
+function hoursText(hours: number): string {
+  return t('time.hours.value', { hours: Number(hours.toFixed(2)) })
+}
+
+function dayText(day: string): string {
+  const date = new Date(`${day}T00:00:00`)
+  if (Number.isNaN(date.getTime())) return day
+  try {
+    return date.toLocaleDateString(env.locale, { day: 'numeric', month: 'short', year: 'numeric' })
+  } catch {
+    return day
+  }
+}
+
+/** Time tab: log time, then the current user's entries on this task with their total. */
+function TimeTab({ issue }: { issue: IssueDetail }) {
+  const entries = read(timeEntries)
+  const failed = read(timeEntriesError)
+  const totalHours = (entries ?? []).reduce((sum, e) => sum + e.hours, 0)
+  return (
+    <Stack gap="sm">
+      <Box background="muted" radius="md" padding="sm" direction="column" gap="sm">
+        <Row gap="sm" align="end">
+          <Box grow>
+            <Input label={t('time.hours')} placeholder="1.5" value={read(hours)} onChange={(v) => set(hours, v)} />
+          </Box>
+          <Box grow>
+            <Input
+              label={t('time.comment')}
+              value={read(timeComment)}
+              onChange={(v) => set(timeComment, v)}
+              onSubmit={() => logTime(issue)}
+            />
+          </Box>
+        </Row>
+        <Row justify="end">
+          <Button size="sm" icon="calendar" disabled={read(busy) || !read(hours).trim()} onPress={() => logTime(issue)}>
+            {t('time.submit')}
+          </Button>
+        </Row>
+      </Box>
+      <SectionHeader title={t('time.mine')} count={entries ? hoursText(totalHours) : undefined} />
+      {entries === null ? (
+        <Spinner label={t('time.loading')} />
+      ) : failed ? (
+        <Text muted size="sm">
+          {failed}
+        </Text>
+      ) : entries.length === 0 ? (
+        <Text muted size="sm">
+          {t('time.none')}
+        </Text>
+      ) : (
+        <Stack gap="xs">
+          {entries.map((e) => (
+            <Row key={`time-${e.id}`} justify="between" align="start" gap="sm">
+              <Stack gap="none">
+                <Text size="sm">{e.comments || e.activity}</Text>
+                <Text size="xs" muted>
+                  {e.comments && e.activity ? `${dayText(e.spentOn)} · ${e.activity}` : dayText(e.spentOn)}
+                </Text>
+              </Stack>
+              <Box shrink={false}>
+                <Text size="sm" weight="semibold">
+                  {hoursText(e.hours)}
+                </Text>
+              </Box>
+            </Row>
+          ))}
+        </Stack>
+      )}
+    </Stack>
+  )
+}
+
 function IssueView({ issue }: { issue: IssueDetail }) {
   const ws = read(workspace)
   const disabled = read(busy)
@@ -931,12 +1034,6 @@ function IssueView({ issue }: { issue: IssueDetail }) {
       ) : null}
 
       <Separator />
-      <Stack gap="sm">
-        <SectionHeader title={t('issue.description')} />
-        {issue.description ? <Markdown content={textileToMarkdown(issue.description)} /> : <Text muted size="sm">{t('issue.noDescription')}</Text>}
-      </Stack>
-
-      <Separator />
       <Stack gap="xs">
         <SectionHeader title={t('section.agent')} />
         <LaunchSection issue={issue} />
@@ -961,46 +1058,59 @@ function IssueView({ issue }: { issue: IssueDetail }) {
         </Collapsible>
       </Stack>
 
-      <Separator />
-      <Stack gap="sm">
-        <SectionHeader title={t('section.activity')} count={issue.journals.length} />
-        {issue.journals.length === 0 ? (
-          <Text muted size="sm">
-            {t('issue.noComments')}
-          </Text>
-        ) : (
-          <Stack gap="md">
-            {issue.journals.map((j) => (
-              <Stack gap="xs">
-                <Row justify="between" align="center" gap="xs">
-                  <Text size="xs" weight="semibold" truncate>
-                    {j.author}
-                  </Text>
-                  <RelativeTime at={Date.parse(j.createdOn) || Date.now()} muted />
-                </Row>
-                <Markdown content={textileToMarkdown(j.notes)} />
-              </Stack>
-            ))}
-          </Stack>
-        )}
-        <Collapsible title={t('comment.title')}>
+      <Tabs label={t('tabs.label')} value={read(detailTab)} onChange={(v) => set(detailTab, asDetailTab(v))}>
+        <Tab value="description" label={t('issue.description')} icon="file-text">
+          {issue.description ? (
+            <Box background="muted" radius="md" padding="sm">
+              <Markdown content={textileToMarkdown(issue.description)} />
+            </Box>
+          ) : (
+            <Text muted size="sm">
+              {t('issue.noDescription')}
+            </Text>
+          )}
+        </Tab>
+
+        <Tab value="activity" label={t('tabs.activity', { count: issue.journals.length })} icon="activity">
           <Stack gap="sm">
-            <Textarea label={t('comment.label')} labelHidden rows={3} value={read(note)} onChange={(v) => set(note, v)} />
-            <Button icon="edit" disabled={disabled} onPress={() => addNote(issue)}>
-              {t('comment.submit')}
-            </Button>
+            {issue.journals.length === 0 ? (
+              <Text muted size="sm">
+                {t('issue.noComments')}
+              </Text>
+            ) : (
+              issue.journals.map((j) => (
+                // One comment per grey box, author and time on top, as in GitLab.
+                <Box background="muted" radius="md" padding="sm" direction="column" gap="xs">
+                  <Row justify="between" align="center" gap="xs">
+                    <Text size="xs" weight="semibold" truncate>
+                      {j.author}
+                    </Text>
+                    <RelativeTime at={Date.parse(j.createdOn) || Date.now()} muted />
+                  </Row>
+                  <Markdown content={textileToMarkdown(j.notes)} />
+                </Box>
+              ))
+            )}
+            <Textarea
+              label={t('comment.label')}
+              labelHidden
+              placeholder={t('comment.placeholder')}
+              rows={3}
+              value={read(note)}
+              onChange={(v) => set(note, v)}
+            />
+            <Row justify="end">
+              <Button size="sm" icon="edit" disabled={disabled || !read(note).trim()} onPress={() => addNote(issue)}>
+                {t('comment.submit')}
+              </Button>
+            </Row>
           </Stack>
-        </Collapsible>
-        <Collapsible title={t('time.title')}>
-          <Stack gap="sm">
-            <Input label={t('time.hours')} placeholder="1.5" value={read(hours)} onChange={(v) => set(hours, v)} />
-            <Input label={t('time.comment')} value={read(timeComment)} onChange={(v) => set(timeComment, v)} />
-            <Button icon="calendar" disabled={disabled} onPress={() => logTime(issue)}>
-              {t('time.submit')}
-            </Button>
-          </Stack>
-        </Collapsible>
-      </Stack>
+        </Tab>
+
+        <Tab value="time" label={t('tabs.time')} icon="calendar">
+          <TimeTab issue={issue} />
+        </Tab>
+      </Tabs>
     </Stack>
   )
 }

@@ -9,6 +9,7 @@ import {
   Card,
   Collapsible,
   EmptyState,
+  Field,
   env,
   Heading,
   IconButton,
@@ -32,6 +33,7 @@ import {
   Text,
   Textarea,
   update,
+  type Atom,
   type PanelContext
 } from 'orca'
 import { translate, translateErrorCode, type MessageKey } from './i18n'
@@ -90,7 +92,18 @@ const projectByOrcaProject = atom<Record<string, string>>('redmine.projectByOrca
 const issueByWorkspace = atom<Record<string, AssignedIssue>>('redmine.issueByWorkspace', {}, { persist: 'plugin' })
 const located = atom<LocatedWorkspace | null>(null)
 const locateError = atom<string | null>(null)
-const projectFilter = atom('')
+
+/** Open/closed state and search text of one SearchPicker. */
+interface PickerState {
+  open: Atom<boolean>
+  filter: Atom<string>
+}
+function pickerState(): PickerState {
+  return { open: atom(false), filter: atom('') }
+}
+const PICKER_LIMIT = 8
+const redmineProjectPicker = pickerState()
+const orcaProjectPicker = pickerState()
 
 // Launching an agent in a new workspace. Orca cannot list installed agents, so this list is fixed.
 const NO_AGENT = 'none'
@@ -125,6 +138,8 @@ async function loadSettings(): Promise<void> {
 // Forms.
 const formUrl = atom('')
 const formKey = atom('')
+/** The URL comes from Settings; the form shows it read-only until the person asks to change it. */
+const editingUrl = atom(false)
 const terminalId = atom('')
 const hours = atom('')
 const timeComment = atom('')
@@ -144,7 +159,6 @@ function chooseProject(value: string): void {
     else next[key] = value
     return next
   })
-  set(projectFilter, '')
   void loadIssues()
 }
 
@@ -167,19 +181,6 @@ function assignIssue(issue: AssignedIssue | null): void {
 
 function normalize(text: string): string {
   return text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase()
-}
-
-/** Picker options: the projects matching the filter, plus the assigned one. */
-function projectOptions(): { value: string; label: string }[] {
-  const filter = normalize(read(projectFilter).trim())
-  const current = currentProject()
-  const matching = read(projects).filter(
-    (p) => !filter || p.identifier === current || normalize(`${p.name} ${p.identifier}`).includes(filter)
-  )
-  return [
-    { value: ALL, label: t('projects.all') },
-    ...matching.slice(0, 499).map((p) => ({ value: p.identifier, label: p.name }))
-  ]
 }
 
 async function run(task: () => Promise<void>): Promise<void> {
@@ -216,8 +217,9 @@ async function loadIssues(): Promise<void> {
 
 async function afterConnect(status: ConnectionStatus): Promise<void> {
   set(connection, status)
-  if (!status.configured) return
+  // The URL saved in Settings fills the form, so the panel only asks for the API key.
   if (status.url) set(formUrl, status.url)
+  if (!status.configured) return
   await loadIssues()
   plugin.request('redmine.statuses').then((s) => set(statuses, s), () => set(statuses, []))
   plugin.request('redmine.projects').then((p) => set(projects, p), () => set(projects, []))
@@ -386,7 +388,13 @@ export function setup(ctx: PanelContext): void {
     })
   )
   void loadSettings()
-  ctx.subscriptions.push(settings.onDidChange(() => void loadSettings()))
+  ctx.subscriptions.push(
+    settings.onDidChange(({ key }) => {
+      void loadSettings()
+      // The URL changed in Settings: check the connection again with the stored API key.
+      if (key === 'url') void plugin.request('redmine.status').then(afterConnect, (e) => set(error, errorText(e)))
+    })
+  )
   void plugin.request('redmine.status').then(afterConnect, (e) => set(error, errorText(e)))
 }
 
@@ -403,12 +411,21 @@ function ConnectForm() {
           <Text>{translateErrorCode(env.locale, status.errorCode, status.errorDetail ?? '') ?? status.errorDetail ?? ''}</Text>
         </Callout>
       ) : null}
-      <Input
-        label={t('connect.url')}
-        placeholder="https://redmine.example.com"
-        value={read(formUrl)}
-        onChange={(v) => set(formUrl, v)}
-      />
+      {status?.url && !read(editingUrl) ? (
+        <Row justify="between" gap="xs">
+          <Text size="sm" truncate>
+            {t('connect.urlFromSettings', { url: status.url })}
+          </Text>
+          <Link onPress={() => set(editingUrl, true)}>{t('connect.changeUrl')}</Link>
+        </Row>
+      ) : (
+        <Input
+          label={t('connect.url')}
+          placeholder="https://redmine.example.com"
+          value={read(formUrl)}
+          onChange={(v) => set(formUrl, v)}
+        />
+      )}
       <Input
         label={t('connect.apiKey')}
         type="password"
@@ -419,34 +436,121 @@ function ConnectForm() {
       <Button tone="accent" icon="link" disabled={read(busy) || !read(formUrl) || !read(formKey)} onPress={connect}>
         {t('connect.submit')}
       </Button>
+      <Text muted size="xs">
+        {t('connect.whyNotSettings')}
+      </Text>
     </Stack>
   )
 }
 
-function ProjectPicker({ label }: { label: string }) {
-  const current = currentProject()
+interface PickerOption {
+  value: string
+  label: string
+}
+
+interface PickerProps {
+  /** Prefix for list item keys (tests find items as `testId: '<id>-<value>'`). */
+  id: string
+  state: PickerState
+  label: string
+  value: string | null
+  options: readonly PickerOption[]
+  /** Shown when nothing is chosen; when given, the picker offers to clear the value. */
+  noneLabel?: string
+  clearLabel?: string
+  placeholder?: string
+  onChange: (value: string | null) => void
+}
+
+/**
+ * A dropdown with a search box, built from Orca components (the components `Select` cannot search).
+ * Closed: a button with the current value. Open: a search field and the first matches; choosing one,
+ * or pressing Enter for the first match, closes it.
+ */
+function SearchPicker(props: PickerProps) {
+  const { id, state, label, value, options, noneLabel, clearLabel, placeholder, onChange } = props
+  const close = () => {
+    set(state.open, false)
+    set(state.filter, '')
+  }
+  const choose = (next: string | null) => {
+    close()
+    onChange(next)
+  }
+  const current = options.find((o) => o.value === value)
+
+  if (!read(state.open)) {
+    return (
+      <Field label={label}>
+        <Row gap="xs">
+          <Button key={`${id}-open`} variant="outline" icon="expand" onPress={() => set(state.open, true)}>
+            {current?.label ?? noneLabel ?? placeholder ?? ''}
+          </Button>
+          {value && noneLabel ? (
+            <IconButton
+              key={`${id}-clear`}
+              icon="close"
+              label={clearLabel ?? noneLabel}
+              variant="ghost"
+              onPress={() => choose(null)}
+            />
+          ) : null}
+        </Row>
+      </Field>
+    )
+  }
+
+  const filter = normalize(read(state.filter).trim())
+  const matches = filter ? options.filter((o) => normalize(`${o.label} ${o.value}`).includes(filter)) : options
+  const shown = matches.slice(0, PICKER_LIMIT)
+  const items = [
+    ...(noneLabel && !filter
+      ? [<ListItem key={`${id}-none`} title={noneLabel} icon="close" current={!value} onPress={() => choose(null)} />]
+      : []),
+    ...shown.map((o) => (
+      <ListItem key={`${id}-${o.value}`} title={o.label} current={o.value === value} onPress={() => choose(o.value)} />
+    ))
+  ]
   return (
-    <Stack gap="xs">
-      <Input
-        label={t('projects.filter')}
-        labelHidden
-        type="search"
-        placeholder={t('projects.filterPlaceholder', { count: read(projects).length })}
-        value={read(projectFilter)}
-        onChange={(v) => set(projectFilter, v)}
-      />
-      <Row gap="xs" align="end">
-        <Select label={label} value={current ?? ALL} options={projectOptions()} onChange={chooseProject} />
-        {current ? (
-          <IconButton icon="close" label={t('projects.clear')} variant="ghost" onPress={() => chooseProject(ALL)} />
-        ) : null}
-      </Row>
-      {read(projectFilter).trim() ? (
-        <Text muted size="xs">
-          {t('projects.matches', { shown: projectOptions().length - 1, total: read(projects).length })}
-        </Text>
-      ) : null}
-    </Stack>
+    <Field label={label}>
+      <Stack gap="xs">
+        <Input
+          label={t('picker.search', { label })}
+          labelHidden
+          type="search"
+          placeholder={t('picker.searchPlaceholder', { count: options.length })}
+          value={read(state.filter)}
+          onChange={(v) => set(state.filter, v)}
+          onSubmit={() => (shown[0] ? choose(shown[0].value) : undefined)}
+        />
+        {items.length > 0 ? <List label={label}>{items}</List> : <Text muted size="sm">{t('picker.empty')}</Text>}
+        <Row justify="between" gap="xs">
+          <Text muted size="xs">
+            {matches.length > shown.length
+              ? t('picker.more', { shown: shown.length, total: matches.length })
+              : t('picker.count', { total: matches.length })}
+          </Text>
+          <Button size="sm" variant="ghost" onPress={close}>
+            {t('picker.cancel')}
+          </Button>
+        </Row>
+      </Stack>
+    </Field>
+  )
+}
+
+function ProjectPicker({ label }: { label: string }) {
+  return (
+    <SearchPicker
+      id="redmine-project"
+      state={redmineProjectPicker}
+      label={label}
+      value={currentProject()}
+      options={read(projects).map((p) => ({ value: p.identifier, label: p.name }))}
+      noneLabel={t('projects.all')}
+      clearLabel={t('projects.clear')}
+      onChange={(v) => chooseProject(v ?? ALL)}
+    />
   )
 }
 
@@ -555,12 +659,14 @@ function LaunchSection({ issue }: { issue: IssueDetail }) {
           {t('launch.name', { name: workspaceNameFor(issue) })}
         </Text>
         {read(orcaProjects).length > 0 ? (
-          <Select
+          <SearchPicker
+            id="orca-project"
+            state={orcaProjectPicker}
             label={t('launch.orcaProject')}
             placeholder={t('launch.orcaProjectPlaceholder')}
-            value={read(launchProject) || undefined}
+            value={read(launchProject) || null}
             options={read(orcaProjects).map((p) => ({ value: p.id, label: p.name }))}
-            onChange={(v) => set(launchProject, v)}
+            onChange={(v) => set(launchProject, v ?? '')}
           />
         ) : (
           <Text muted size="sm">

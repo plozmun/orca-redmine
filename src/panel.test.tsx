@@ -66,7 +66,17 @@ const drawn = (view: { tree(): unknown }, text: string) => JSON.stringify(view.t
 const ws = (displayName: string, terminals: { id: string; title?: string }[] = []) => ({
   context: { branch: displayName.startsWith('feature/') ? displayName : 'main', displayName, terminals }
 })
-const projectSelect = { type: 'Select' } as const
+
+type View = Awaited<ReturnType<typeof mount>>
+/** Text on a SearchPicker's button: the chosen option's label, or the "none" label. */
+const pickerValue = (view: View, id: string) => view.find({ testId: `${id}-open` })?.text
+async function pick(view: View, id: string, value: string) {
+  await view.press({ testId: `${id}-open` })
+  await view.press({ testId: `${id}-${value}` })
+}
+const RP = 'redmine-project'
+const PICKER_SEARCH = 'Search: Redmine project for shop'
+const OP = 'orca-project'
 
 test('not configured shows the connect form', async () => {
   const host = mockHost({ requests: { 'redmine.status': () => ({ configured: false, url: null, user: null }) } })
@@ -127,26 +137,26 @@ test('the Redmine project is set per Orca project and shared by its workspaces',
   const asked: unknown[] = []
   const view = await mount(panel, { host: connectedHost(asked), locale: 'en' })
   await view.emit('workspace.changed', ws('shop-a'))
-  assert.equal(view.valueOf(projectSelect), '*')
+  assert.equal(pickerValue(view, RP), 'No project (all)')
   assert.ok(drawn(view, 'Orca project: shop'))
 
-  await view.select(projectSelect, 'shop')
+  await pick(view, RP, 'shop')
   assert.deepEqual(asked.at(-1), { mine: true, search: '', projectId: 'shop' })
 
   // Another workspace of the same Orca project: same Redmine project.
   await view.emit('workspace.changed', ws('shop-b'))
-  assert.equal(view.valueOf(projectSelect), 'shop')
+  assert.equal(pickerValue(view, RP), 'Shop')
   assert.deepEqual(asked.at(-1), { mine: true, search: '', projectId: 'shop' })
 
   // A workspace of another, unconfigured Orca project inherits nothing.
   await view.emit('workspace.changed', ws('web-x'))
-  assert.equal(view.valueOf(projectSelect), '*')
+  assert.equal(pickerValue(view, RP), 'No project (all)')
   assert.deepEqual(asked.at(-1), { mine: true, search: '' })
 
   // Remove the "shop" setting.
   await view.emit('workspace.changed', ws('shop-a'))
   await view.press({ label: 'Remove project' })
-  assert.equal(view.valueOf(projectSelect), '*')
+  assert.equal(pickerValue(view, RP), 'No project (all)')
   assert.deepEqual(view.persisted.plugin['redmine.projectByOrcaProject'], {})
   assert.deepEqual(view.errors, [])
   assert.deepEqual(view.warnings, [])
@@ -177,17 +187,34 @@ test('each workspace can have one task assigned, or none', async () => {
   await view.unmount()
 })
 
-test('filters the project list ignoring accents and case', async () => {
+test('the project picker searches ignoring accents and case', async () => {
   const view = await mount(panel, { host: connectedHost(), locale: 'en' })
   await view.emit('workspace.changed', ws('shop-a'))
-  await view.type({ label: 'Filter projects' }, 'alsa')
-  assert.ok(view.find({ text: '1 of 3 projects' }))
-  await view.type({ label: 'Filter projects' }, 'CORPORATE', { replace: true })
-  assert.ok(view.find({ text: '1 of 3 projects' }))
-  await view.select(projectSelect, 'web')
-  assert.equal(view.valueOf(projectSelect), 'web')
-  assert.equal(view.valueOf({ label: 'Filter projects' }), '')
+  await view.press({ testId: `${RP}-open` })
+  // Open with no search: "none" plus every project.
+  assert.ok(view.find({ testId: `${RP}-none` }))
+  assert.ok(view.find({ text: '3 results' }))
+
+  await view.type({ label: PICKER_SEARCH }, 'ALSA')
+  assert.ok(view.find({ testId: `${RP}-alsa` }))
+  assert.equal(view.find({ testId: `${RP}-web` }), null)
+  assert.equal(view.find({ testId: `${RP}-none` }), null)
+
+  await view.type({ label: PICKER_SEARCH }, 'corporáte', { replace: true })
+  assert.ok(view.find({ text: '1 results' }))
+  // Enter picks the first match and closes the picker.
+  await view.submit({ label: PICKER_SEARCH })
+  assert.equal(pickerValue(view, RP), 'Corporate website')
+  assert.equal(view.find({ label: PICKER_SEARCH }), null)
+
+  // Cancel closes without changing anything.
+  await view.press({ testId: `${RP}-open` })
+  await view.type({ label: PICKER_SEARCH }, 'zzz')
+  assert.ok(view.find({ text: 'No matches' }))
+  await view.press({ text: 'Cancel' })
+  assert.equal(pickerValue(view, RP), 'Corporate website')
   assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.warnings, [])
   await view.unmount()
 })
 
@@ -195,7 +222,7 @@ test('without an identified Orca project there is nothing to configure or assign
   const view = await mount(panel, { host: connectedHost(), locale: 'en' })
   await view.emit('workspace.changed', ws('unknown'))
   assert.ok(drawn(view, 'Could not identify the Orca project'))
-  assert.equal(view.find({ type: 'Select' }), null)
+  assert.equal(view.find({ testId: `${RP}-open` }), null)
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
@@ -207,10 +234,10 @@ test('launches the agent in a new workspace and assigns it the task', async () =
   await view.press({ type: 'ListItem' })
   await view.toggle({ type: 'Collapsible', label: 'Launch agent in a new workspace' })
   // With no project mapping, it suggests the focused workspace's Orca project.
-  assert.equal(view.valueOf({ type: 'Select', label: 'Orca project' }), 'git:web')
+  assert.equal(pickerValue(view, OP), 'web')
   assert.ok(view.find({ text: 'Workspace and branch: 4077-checkout-screen (with Orca’s branch prefix)' }))
 
-  await view.select({ type: 'Select', label: 'Orca project' }, 'git:shop')
+  await pick(view, OP, 'git:shop')
   await view.type({ label: 'Base branch' }, 'develop')
   await view.press({ text: 'Create workspace and launch agent' })
   assert.deepEqual(asked.at(-1), {
@@ -234,11 +261,11 @@ test('launches the agent in a new workspace and assigns it the task', async () =
 test('suggests the Orca project mapped to the task’s Redmine project', async () => {
   const view = await mount(panel, { host: connectedHost(), locale: 'en' })
   await view.emit('workspace.changed', ws('shop-a'))
-  await view.select(projectSelect, 'shop')
+  await pick(view, RP, 'shop')
   await view.emit('workspace.changed', ws('web-x'))
   await view.press({ type: 'ListItem' })
   await view.toggle({ type: 'Collapsible', label: 'Launch agent in a new workspace' })
-  assert.equal(view.valueOf({ type: 'Select', label: 'Orca project' }), 'git:shop')
+  assert.equal(pickerValue(view, OP), 'shop')
   await view.unmount()
 })
 
@@ -259,5 +286,29 @@ test('instructions and comments start from the plugin settings and can be change
   assert.equal(launch.comments, 'none')
   assert.deepEqual(view.errors, [])
   assert.deepEqual(view.refusals, [])
+  await view.unmount()
+})
+
+test('with the URL already in Settings, the connect form only asks for the API key', async () => {
+  const configured: unknown[] = []
+  const host = mockHost({
+    requests: {
+      'redmine.status': () => ({ configured: false, url: 'https://redmine.test', user: null }),
+      'redmine.configure': (input: unknown) => {
+        configured.push(input)
+        return { configured: false, url: 'https://redmine.test', user: null }
+      }
+    }
+  })
+  const view = await mount(panel, { host, locale: 'en' })
+  assert.ok(view.find({ text: 'Redmine: https://redmine.test' }))
+  assert.equal(view.find({ label: 'Redmine URL' }), null)
+  await view.type({ label: 'API key' }, 'KEY')
+  await view.press({ text: 'Connect' })
+  assert.deepEqual(configured, [{ url: 'https://redmine.test', apiKey: 'KEY' }])
+
+  await view.press({ text: 'Change URL' })
+  assert.equal(view.valueOf({ label: 'Redmine URL' }), 'https://redmine.test')
+  assert.deepEqual(view.errors, [])
   await view.unmount()
 })

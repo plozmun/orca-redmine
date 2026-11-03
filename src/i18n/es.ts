@@ -6,6 +6,9 @@ export const es: Messages = {
   'connect.help': 'La API key está en Redmine → Mi cuenta → Clave de acceso a la API. Se guarda cifrada en el llavero del sistema.',
   'connect.failed': 'No se pudo conectar',
   'connect.url': 'URL de Redmine',
+  'connect.urlFromSettings': 'Redmine: {url}',
+  'connect.changeUrl': 'Cambiar URL',
+  'connect.whyNotSettings': 'La API key se pide aquí y no en Settings → Plugins → Redmine porque la configuración de Orca se guarda sin cifrar; aquí va al llavero del sistema.',
   'connect.apiKey': 'API key',
   'connect.submit': 'Conectar',
   'connecting': 'Conectando con Redmine',
@@ -23,11 +26,15 @@ export const es: Messages = {
   'workspace.unassignTask': 'Desasignar tarea',
   'workspace.assignFromBranch': 'Asignar #{id} (de la rama)',
 
-  'projects.filter': 'Filtrar proyectos',
-  'projects.filterPlaceholder': 'Filtrar {count} proyectos de Redmine…',
   'projects.all': 'Sin proyecto (todos)',
   'projects.clear': 'Quitar proyecto',
-  'projects.matches': '{shown} de {total} proyectos',
+
+  'picker.search': 'Buscar: {label}',
+  'picker.searchPlaceholder': 'Buscar entre {count}…',
+  'picker.empty': 'Sin resultados',
+  'picker.count': '{total} resultados',
+  'picker.more': 'Mostrando {shown} de {total}: afina la búsqueda',
+  'picker.cancel': 'Cancelar',
 
   'list.search': 'Buscar',
   'list.searchPlaceholder': 'Asunto o #número',

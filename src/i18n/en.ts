@@ -6,6 +6,9 @@ export const en = {
   'connect.help': 'Find your API key in Redmine → My account → API access key. It is stored encrypted in the system keychain.',
   'connect.failed': 'Could not connect',
   'connect.url': 'Redmine URL',
+  'connect.urlFromSettings': 'Redmine: {url}',
+  'connect.changeUrl': 'Change URL',
+  'connect.whyNotSettings': 'The API key is asked for here, not in Settings → Plugins → Redmine, because Orca settings are stored unencrypted; here it goes to the system keychain.',
   'connect.apiKey': 'API key',
   'connect.submit': 'Connect',
   'connecting': 'Connecting to Redmine',
@@ -26,11 +29,16 @@ export const en = {
   'workspace.assignFromBranch': 'Assign #{id} (from branch)',
 
   // Project picker
-  'projects.filter': 'Filter projects',
-  'projects.filterPlaceholder': 'Filter {count} Redmine projects…',
   'projects.all': 'No project (all)',
   'projects.clear': 'Remove project',
-  'projects.matches': '{shown} of {total} projects',
+
+  // Search picker
+  'picker.search': 'Search: {label}',
+  'picker.searchPlaceholder': 'Search {count}…',
+  'picker.empty': 'No matches',
+  'picker.count': '{total} results',
+  'picker.more': 'Showing {shown} of {total}: refine the search',
+  'picker.cancel': 'Cancel',
 
   // Issue list
   'list.search': 'Search',

@@ -2,12 +2,12 @@
   "manifestVersion": 2,
   "id": "redmine-tasks",
   "name": "Redmine",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "Your Redmine tasks in Orca's sidebar, linked to workspaces and agents.",
   "icon": "assets/icon.png",
   "cover": {
     "path": "assets/cover.png",
-    "alt": "The Redmine logo on a white tile beside the title “Redmine for Orca” and the tagline “Your Redmine tasks in the sidebar, tied to workspaces and agents.”"
+    "alt": "The Redmine logo on a white tile beside the title “Redmine for Orca” and the tagline “Your Redmine tasks, tied to workspaces and agents.”"
   },
   "engines": {
     "orca": ">=1.4.246"

@@ -101,7 +101,7 @@ export const en = {
   'launch.submit': 'Create workspace and launch agent',
   'launch.submitNoAgent': 'Create workspace',
   'launch.contextHint': 'The agent gets your instructions plus, as reference data, the task description and latest comments.',
-  'launch.defaultInstructions': 'Complete Redmine task #{id} "{subject}": {url}',
+  'launch.defaultInstructions': 'Work on Redmine task #{id} "{subject}": {url}',
   'launch.done': 'Workspace “{name}” created.',
   'launch.doneBranch': 'Workspace “{name}” created on branch {branch}.',
   'launch.doneAgent': '{agent} launched.',

@@ -93,7 +93,7 @@ export const es: Messages = {
   'launch.submit': 'Crear workspace y lanzar agente',
   'launch.submitNoAgent': 'Crear workspace',
   'launch.contextHint': 'El agente recibe tus instrucciones y, como dato de referencia, la descripción y los últimos comentarios de la tarea.',
-  'launch.defaultInstructions': 'Completa la tarea de Redmine #{id} "{subject}": {url}',
+  'launch.defaultInstructions': 'Trabaja en la tarea de Redmine #{id} "{subject}": {url}',
   'launch.done': 'Workspace «{name}» creado.',
   'launch.doneBranch': 'Workspace «{name}» creado en la rama {branch}.',
   'launch.doneAgent': '{agent} lanzado.',

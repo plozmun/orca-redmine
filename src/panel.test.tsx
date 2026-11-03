@@ -249,7 +249,7 @@ test('launches the agent in a new workspace and assigns it the task', async () =
       issueId: 4077,
       orcaProjectId: 'git:shop',
       agent: 'claude',
-      instructions: 'Complete Redmine task #4077 "Checkout screen": https://redmine.test/issues/4077',
+      instructions: 'Work on Redmine task #4077 "Checkout screen": https://redmine.test/issues/4077',
       activate: true,
       locale: 'en',
       comments: 'recent',

@@ -49,12 +49,12 @@ test('prompt: instructions + context fenced as untrusted data', () => {
 
 test('empty instructions fall back to the localized default; long context is capped', () => {
   const long = { ...issue, description: 'x'.repeat(30000) }
-  assert.ok(buildLaunchPrompt(long, '  ', 'en').startsWith('Complete Redmine task #37046'))
-  assert.ok(buildLaunchPrompt(long, '', 'es-ES').startsWith('Completa la tarea de Redmine #37046'))
+  assert.ok(buildLaunchPrompt(long, '  ', 'en').startsWith('Work on Redmine task #37046'))
+  assert.ok(buildLaunchPrompt(long, '', 'es-ES').startsWith('Trabaja en la tarea de Redmine #37046'))
   const prompt = buildLaunchPrompt(long, 'x', 'en')
   assert.ok(prompt.includes('[linked context truncated]'))
   assert.ok(prompt.length < CONTEXT_MAX_CHARS + 200)
-  assert.equal(defaultInstructions(issue, 'en'), `Complete Redmine task #37046 "${issue.subject}": ${issue.url}`)
+  assert.equal(defaultInstructions(issue, 'en'), `Work on Redmine task #37046 "${issue.subject}": ${issue.url}`)
 })
 
 const many: IssueDetail = {
@@ -89,7 +89,7 @@ test('prompt templates from Settings', () => {
     'Fix #37046 (Task, Normal) in [ALSA] Agentic Commerce: https://redmine.test/issues/37046 {unknown}'
   )
   assert.equal(defaultInstructions(issue, 'es', '  Implement #{id}  '), 'Implement #37046')
-  assert.equal(defaultInstructions(issue, 'es', '  '), `Completa la tarea de Redmine #37046 "${issue.subject}": ${issue.url}`)
+  assert.equal(defaultInstructions(issue, 'es', '  '), `Trabaja en la tarea de Redmine #37046 "${issue.subject}": ${issue.url}`)
   assert.equal(sendPrompt(issue, 'en', 'Look at #{id}\n\n  then {url}'), 'Look at #37046 then https://redmine.test/issues/37046')
   assert.ok(sendPrompt(issue, 'en', null).startsWith('Work on Redmine task #37046'))
 })

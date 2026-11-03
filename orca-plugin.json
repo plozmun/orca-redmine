@@ -2,8 +2,13 @@
   "manifestVersion": 2,
   "id": "redmine-tasks",
   "name": "Redmine",
-  "version": "0.1.3",
-  "description": "Your Redmine tasks in Orca: list and detail, status changes, comments, time logging, a Redmine project per Orca project, a task per workspace, and launching an agent in a new workspace for a task. UI in English and Spanish, following Orca's language.",
+  "version": "0.1.4",
+  "description": "Your Redmine tasks in Orca's sidebar, linked to workspaces and agents.",
+  "icon": "assets/icon.png",
+  "cover": {
+    "path": "assets/cover.png",
+    "alt": "The Redmine logo on a white tile beside the title “Redmine for Orca” and the tagline “Your Redmine tasks in the sidebar, tied to workspaces and agents.”"
+  },
   "engines": {
     "orca": ">=1.4.246"
   },

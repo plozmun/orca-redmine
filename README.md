@@ -36,6 +36,7 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 
 ```
 orca-plugin.json        Manifest: panel, command, settings and capabilities
+assets/                 Plugin icon and cover for the plugin page
 src/redmine.ts          Redmine REST API client (no Orca dependency)
 src/orca-workspaces.ts  Locates the focused workspace and creates worktrees through the `orca` CLI
 src/launch.ts           Workspace name and agent prompt for a task
@@ -139,3 +140,7 @@ Note: with Orca 1.4.246, `orca plugin types` fails because the installed app lac
 - When `workspace.created` fires, comment on the task or move it to "In progress".
 - An activity picker for time entries (`/enumerations/time_entry_activities.json`) when Redmine has no default activity.
 - More languages in `src/i18n/`.
+
+## Credits
+
+The plugin icon and cover (`assets/`) use the Redmine logo by Martin Herr, released under [CC BY-SA 2.5](https://creativecommons.org/licenses/by-sa/2.5/) ([source](https://github.com/edavis10/redmine_logo/)). These images are shared under the same license. Redmine is a trademark of its owners; this plugin is not affiliated with the Redmine project.

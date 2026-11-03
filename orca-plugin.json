@@ -1,0 +1,108 @@
+{
+  "manifestVersion": 2,
+  "id": "redmine-tasks",
+  "name": "Redmine",
+  "version": "0.1.0",
+  "description": "Your Redmine tasks in Orca: list and detail, status changes, comments, time logging, a Redmine project per Orca project, a task per workspace, and launching an agent in a new workspace for a task. UI in English and Spanish, following Orca's language.",
+  "engines": {
+    "orca": ">=1.4.246"
+  },
+  "execution": "trusted-worker",
+  "pluginApi": 1,
+  "main": "src/worker.ts",
+  "contributes": {
+    "panels": [
+      {
+        "id": "redmine",
+        "title": "Redmine",
+        "icon": "flag",
+        "entry": "src/panel.tsx",
+        "ui": "components"
+      }
+    ],
+    "commands": [
+      {
+        "id": "redmine.myIssues",
+        "title": "Redmine: my open tasks"
+      }
+    ],
+    "settings": [
+      {
+        "key": "url",
+        "title": "Redmine URL",
+        "description": "Base address, without a trailing slash. The API key is entered in the panel and stored encrypted.",
+        "type": "string",
+        "default": "",
+        "placeholder": "https://redmine.example.com"
+      },
+      {
+        "key": "limit",
+        "title": "Tasks per page",
+        "type": "integer",
+        "default": 50,
+        "minimum": 1,
+        "maximum": 100
+      },
+      {
+        "key": "launchInstructions",
+        "title": "Instructions for a new-workspace agent",
+        "description": "What the agent launched in a new workspace is asked to do. The task context (description and comments) is appended after it. Placeholders: {id} {subject} {url} {project} {tracker} {status} {priority} {assignee}. Leave empty for a default in Orca's language. It can still be edited in the panel before launching.",
+        "type": "string",
+        "default": "",
+        "multiline": true,
+        "maxLength": 4000,
+        "placeholder": "Complete Redmine task #{id} \"{subject}\": {url}"
+      },
+      {
+        "key": "sendPrompt",
+        "title": "Prompt for “Send to agent”",
+        "description": "Typed into a terminal of the current workspace, without pressing Enter. Newlines become spaces. Placeholders: {id} {subject} {url} {project} {tracker} {status} {priority} {assignee}. Leave empty for a default in Orca's language.",
+        "type": "string",
+        "default": "",
+        "multiline": true,
+        "maxLength": 2000,
+        "placeholder": "Work on Redmine task #{id} \"{subject}\" ({url})."
+      },
+      {
+        "key": "contextComments",
+        "title": "Comments in the agent context",
+        "description": "Which task comments go into the context of an agent launched in a new workspace. Can be changed per launch in the panel.",
+        "type": "string",
+        "default": "recent",
+        "enum": [
+          "none",
+          "recent",
+          "all"
+        ],
+        "enumLabels": [
+          "No comments",
+          "Latest 5 comments",
+          "Full history"
+        ]
+      },
+      {
+        "key": "contextMaxChars",
+        "title": "Maximum context size (characters)",
+        "description": "Cap for the task context block. When the full history does not fit, the oldest comments are left out first. Orca uses 12000 for its own integrations.",
+        "type": "integer",
+        "default": 12000,
+        "minimum": 2000,
+        "maximum": 60000
+      }
+    ]
+  },
+  "capabilities": [
+    {
+      "kind": "settings:own"
+    },
+    {
+      "kind": "secrets:own"
+    },
+    {
+      "kind": "workspace:read"
+    },
+    {
+      "kind": "terminal:send"
+    }
+  ]
+}

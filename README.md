@@ -1,8 +1,17 @@
 # Redmine for Orca
 
-An Orca plugin (`local.redmine-tasks`) that brings your Redmine tasks into the sidebar and ties them to Orca workspaces and agents.
+An Orca plugin (`plozmun.redmine-tasks`) that brings your Redmine tasks into the sidebar and ties them to Orca workspaces and agents.
 
 > Orca does not yet let plugins add *task sources* or *connections* (how the native Jira and Linear integrations work): those contribution points are reserved. This plugin gives a similar experience with a **sidebar panel** and a **Node worker** that calls the Redmine REST API and the `orca` CLI.
+
+## Install
+
+Requires Orca 1.4.246 or newer.
+
+- From Orca's plugin catalog: search for **Redmine** (listing: https://www.onorca.dev/plugins/plozmun/orca-redmine).
+- Or from a local clone, for development: `orca plugin dev load <path-to-clone>`.
+
+It runs a worker with your user's access (see [Permissions](#permissions)), so Orca asks you to approve it on first load.
 
 ## Features
 
@@ -118,7 +127,7 @@ orca plugin validate .
 orca plugin test .            # unit tests (panel, worker, client, i18n)
 orca plugin check .           # renders the panel in each scenario of panel.check.ts
 orca plugin dev watch . --check --shot .orca/shots   # load into Orca with hot reload (asks for --approve)
-orca plugin open local.redmine-tasks --panel redmine
+orca plugin open local.redmine-tasks --panel redmine   # a dev folder loads as local.*; an install as plozmun.*
 ```
 
 Official guide: `orca skills get orca-plugin-authoring` (and `--references`).

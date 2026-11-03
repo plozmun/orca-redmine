@@ -115,3 +115,16 @@ test('issue number from the branch', () => {
   assert.equal(issueIdFromBranch('release/v2'), null)
   assert.equal(issueIdFromBranch(null), null)
 })
+
+test('filters issues by status; unknown values mean open', async () => {
+  const { calls, impl } = fakeFetch({ '/issues.json': { body: { issues: [], total_count: 0 } } })
+  const client = new RedmineClient('https://redmine.test', 'KEY', impl)
+  await client.listIssues({ mine: true, status: '3' })
+  await client.listIssues({ mine: true, status: 'closed' })
+  await client.listIssues({ mine: true, status: '*' })
+  await client.listIssues({ mine: true, status: '1;drop' })
+  assert.deepEqual(
+    calls.map((c) => new URL(c.url).searchParams.get('status_id')),
+    ['3', 'closed', '*', 'open']
+  )
+})

@@ -18,14 +18,17 @@ export const en = {
   'header.reload': 'Reload',
   'header.disconnect': 'Disconnect',
 
+  // Section headers
+  'section.tasks': 'Tasks',
+  'section.agent': 'Agent',
+  'section.activity': 'Activity',
+
   // Workspace card
   'workspace.none': 'No focused workspace: showing tasks from every project.',
-  'workspace.orcaProject': 'Orca project: {name}',
   'workspace.orcaProjectUnknown': 'Could not identify the Orca project',
   'workspace.orcaProjectUnknownReason': 'Could not identify the Orca project: {reason}',
   'workspace.redmineProjectFor': 'Redmine project for {name}',
-  'workspace.noTask': 'No task assigned. Open a task and press “Assign to this workspace”.',
-  'workspace.unassignTask': 'Unassign task',
+  'workspace.redmineProject': 'Redmine project',
   'workspace.assignFromBranch': 'Assign #{id} (from branch)',
 
   // Project picker
@@ -47,9 +50,16 @@ export const en = {
   'list.loading': 'Loading tasks',
   'list.empty': 'No open tasks',
   'list.emptyHint': 'Change the filter or the search.',
+  'list.emptyAny': 'No tasks',
+  'statusFilter.label': 'Status',
+  'statusFilter.open': 'Open',
+  'statusFilter.closed': 'Closed',
+  'statusFilter.any': 'Any status',
+  'statusFilter.clear': 'Show open tasks',
   'list.count': '{shown} of {total} tasks',
 
   // Issue detail
+  'issue.loading': 'Loading task',
   'issue.back': '← Back',
   'issue.openInRedmine': 'Open in Redmine',
   'issue.unassigned': 'Unassigned',
@@ -59,9 +69,13 @@ export const en = {
   'issue.assign': 'Assign to this workspace',
   'issue.assignReplacing': 'Assign to this workspace (replaces #{id})',
   'issue.status': 'Status',
+  'issue.project': 'Project',
+  'issue.assignee': 'Assignee',
+  'issue.tracker': 'Tracker',
+  'issue.priority': 'Priority',
+  'issue.done': 'Done',
   'issue.description': 'Description',
   'issue.noDescription': 'No description',
-  'issue.history': 'History ({count})',
   'issue.noComments': 'No comments',
 
   // Launch in a new workspace

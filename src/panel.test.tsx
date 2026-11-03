@@ -123,7 +123,7 @@ test('lists tasks, opens one and sends the prompt to the terminal', async () => 
   assert.ok(view.find({ text: 'Assign #4077 (from branch)' }))
 
   await view.press({ type: 'ListItem' })
-  assert.ok(view.find({ text: '#4077 Checkout screen' }))
+  assert.ok(view.find({ text: 'Checkout screen' }) && view.find({ text: '#4077' }))
   await view.toggle({ type: 'Collapsible', label: 'Send to agent' })
   await view.press({ text: 'Send prompt' })
   assert.deepEqual(sent, [{ id: 4077, terminalId: 't1', locale: 'en' }])
@@ -138,7 +138,6 @@ test('the Redmine project is set per Orca project and shared by its workspaces',
   const view = await mount(panel, { host: connectedHost(asked), locale: 'en' })
   await view.emit('workspace.changed', ws('shop-a'))
   assert.equal(pickerValue(view, RP), 'No project (all)')
-  assert.ok(drawn(view, 'Orca project: shop'))
 
   await pick(view, RP, 'shop')
   assert.deepEqual(asked.at(-1), { mine: true, search: '', projectId: 'shop' })
@@ -166,22 +165,24 @@ test('the Redmine project is set per Orca project and shared by its workspaces',
 test('each workspace can have one task assigned, or none', async () => {
   const view = await mount(panel, { host: connectedHost(), locale: 'en' })
   await view.emit('workspace.changed', ws('shop-a'))
-  assert.ok(view.find({ text: 'No task assigned. Open a task and press “Assign to this workspace”.' }))
+  assert.ok(view.find({ type: 'ListItem' }))
 
   await view.press({ type: 'ListItem' })
   await view.press({ text: 'Assign to this workspace' })
   assert.ok(view.find({ text: 'Task of this workspace' }))
   assert.deepEqual(view.persisted.plugin['redmine.issueByWorkspace'], { 'wt-a': { id: 4077, subject: 'Checkout screen' } })
 
-  // The other workspace of the same project has no task.
-  await view.press({ text: '← Back' })
+  // The other workspace of the same project has no task: switching to it leaves the detail.
   await view.emit('workspace.changed', ws('shop-b'))
-  assert.ok(view.find({ text: 'No task assigned. Open a task and press “Assign to this workspace”.' }))
+  assert.equal(view.find({ text: 'Task of this workspace' }), null)
+  assert.ok(view.find({ type: 'ListItem' }))
 
-  // Back again, then unassign.
+  // Back to the first workspace: its task opens by itself.
   await view.emit('workspace.changed', ws('shop-a'))
-  assert.ok(view.find({ text: '#4077 Checkout screen' }))
-  await view.press({ label: 'Unassign task' })
+  assert.ok(view.find({ text: 'Task of this workspace' }))
+
+  // Unassign from the detail.
+  await view.press({ text: 'Unassign' })
   assert.deepEqual(view.persisted.plugin['redmine.issueByWorkspace'], {})
   assert.deepEqual(view.errors, [])
   await view.unmount()
@@ -310,5 +311,48 @@ test('with the URL already in Settings, the connect form only asks for the API k
   await view.press({ text: 'Change URL' })
   assert.equal(view.valueOf({ label: 'Redmine URL' }), 'https://redmine.test')
   assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('switching workspaces fast shows the latest workspace’s task', async () => {
+  const view = await mount(panel, {
+    host: connectedHost([], {
+      // Task 1 answers after task 2, as a slow request would.
+      'redmine.issue': (({ id }: { id: number }) =>
+        new Promise((resolve) =>
+          setTimeout(() => resolve({ ...detail, id, subject: `Task ${id}` }), id === 1 ? 40 : 0)
+        )) as never
+    }),
+    locale: 'en',
+    persisted: {
+      plugin: {
+        'redmine.issueByWorkspace': { 'wt-a': { id: 1, subject: 'Task 1' }, 'wt-b': { id: 2, subject: 'Task 2' } }
+      }
+    }
+  })
+  await Promise.all([view.emit('workspace.changed', ws('shop-a')), view.emit('workspace.changed', ws('shop-b'))])
+  await view.settled()
+  assert.ok(drawn(view, 'Task 2'))
+  assert.equal(drawn(view, 'Task 1'), false)
+  await view.unmount()
+})
+
+test('the list can be filtered by status, and the choice is kept', async () => {
+  const asked: unknown[] = []
+  const view = await mount(panel, { host: connectedHost(asked), locale: 'en' })
+  await view.emit('workspace.changed', ws('shop-a'))
+  assert.equal(pickerValue(view, 'status-filter'), 'Open')
+  assert.deepEqual(asked.at(-1), { mine: true, search: '' })
+
+  await pick(view, 'status-filter', '2')
+  assert.equal(pickerValue(view, 'status-filter'), 'In progress')
+  assert.deepEqual(asked.at(-1), { mine: true, status: '2', search: '' })
+  assert.equal(view.persisted.plugin['redmine.statusFilter'], '2')
+
+  await pick(view, 'status-filter', 'closed')
+  assert.deepEqual(asked.at(-1), { mine: true, status: 'closed', search: '' })
+
+  await view.press({ label: 'Show open tasks' })
+  assert.deepEqual(asked.at(-1), { mine: true, search: '' })
   await view.unmount()
 })

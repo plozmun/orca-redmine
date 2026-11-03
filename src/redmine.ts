@@ -51,7 +51,14 @@ export interface ListOptions {
   mine: boolean
   search?: string
   projectId?: string
+  /** `open` (default), `closed`, `*` (any) or a status id. */
+  status?: string
   limit?: number
+}
+
+/** A status filter Redmine accepts for `status_id`; anything else means open. */
+export function statusFilter(value: string | undefined): string {
+  return value && /^(open|closed|\*|\d+)$/.test(value) ? value : 'open'
 }
 
 /**
@@ -163,7 +170,7 @@ export class RedmineClient {
 
   async listIssues(options: ListOptions): Promise<{ issues: IssueSummary[]; total: number }> {
     const params = new URLSearchParams({
-      status_id: 'open',
+      status_id: statusFilter(options.status),
       sort: 'updated_on:desc',
       limit: String(options.limit ?? 50)
     })

@@ -4,6 +4,7 @@
 import {
   atom,
   Badge,
+  Box,
   Button,
   Callout,
   Card,
@@ -14,6 +15,7 @@ import {
   Heading,
   IconButton,
   Input,
+  KeyValue,
   Link,
   List,
   ListItem,
@@ -24,6 +26,7 @@ import {
   RelativeTime,
   Row,
   Select,
+  Separator,
   set,
   settings,
   shell,
@@ -40,6 +43,7 @@ import { translate, translateErrorCode, type MessageKey } from './i18n'
 import { asCommentsMode, defaultInstructions, RECENT_COMMENTS, workspaceNameFor, type CommentsMode } from './launch'
 import type { LocatedWorkspace } from './orca-workspaces'
 import type { ConnectionStatus } from './protocol'
+import { textileToMarkdown } from './textile'
 import { issueIdFromBranch, type IssueDetail, type IssueStatus, type IssueSummary, type Project } from './redmine'
 
 function t(key: MessageKey, vars?: Record<string, string | number>): string {
@@ -80,10 +84,14 @@ const projects = atom<Project[]>([])
 const detail = atom<IssueDetail | null>(null)
 const workspace = atom<WorkspaceInfo | null>(null)
 const busy = atom(false)
+/** Opening the focused workspace's task: the panel shows a spinner instead of the list. */
+const issueLoading = atom(false)
 
 // Kept across panel runs.
 const search = atom('redmine.search', '', { persist: 'plugin' })
 const onlyMine = atom('redmine.onlyMine', true, { persist: 'plugin' })
+/** Status filter for the list: `open` (default), `closed`, `*` or a status id. */
+const statusFilter = atom('redmine.statusFilter', 'open', { persist: 'plugin' })
 
 // The Redmine project is set per Orca project (repository) and shared by all its workspaces; the
 // task is set per workspace (stable worktree id). Nothing is inherited from another workspace.
@@ -104,6 +112,7 @@ function pickerState(): PickerState {
 const PICKER_LIMIT = 8
 const redmineProjectPicker = pickerState()
 const orcaProjectPicker = pickerState()
+const statusPicker = pickerState()
 
 // Launching an agent in a new workspace. Orca cannot list installed agents, so this list is fixed.
 const NO_AGENT = 'none'
@@ -203,6 +212,7 @@ async function loadIssues(): Promise<void> {
     const project = currentProject()
     const answer = await plugin.request('redmine.issues', {
       mine: read(onlyMine),
+      ...(read(statusFilter) !== 'open' ? { status: read(statusFilter) } : {}),
       search: read(search),
       ...(project ? { projectId: project } : {})
     })
@@ -220,6 +230,7 @@ async function afterConnect(status: ConnectionStatus): Promise<void> {
   // The URL saved in Settings fills the form, so the panel only asks for the API key.
   if (status.url) set(formUrl, status.url)
   if (!status.configured) return
+  showWorkspaceTask()
   await loadIssues()
   plugin.request('redmine.statuses').then((s) => set(statuses, s), () => set(statuses, []))
   plugin.request('redmine.projects').then((p) => set(projects, p), () => set(projects, []))
@@ -235,9 +246,14 @@ function suggestedOrcaProject(issue: IssueDetail): string {
   return mapped ?? read(located)?.orcaProjectId ?? ''
 }
 
+let openSeq = 0
+
 async function openIssue(id: number): Promise<void> {
+  const seq = ++openSeq
   await run(async () => {
     const issue = await plugin.request('redmine.issue', { id })
+    // Another task was opened meanwhile (e.g. the person switched workspaces): keep that one.
+    if (seq !== openSeq) return
     if (read(detail)?.id !== id) {
       set(launchInstructions, defaultInstructions(issue, env.locale, read(instructionsTemplate)))
       set(launchComments, read(defaultComments))
@@ -248,6 +264,27 @@ async function openIssue(id: number): Promise<void> {
   })
 }
 
+function closeIssue(): void {
+  openSeq++
+  set(detail, null)
+}
+
+/**
+ * The focused workspace decides what the panel shows: its assigned task, or the list when it has
+ * none. Runs when the workspace changes (and on connect); Back still lets you browse the list.
+ */
+function showWorkspaceTask(): void {
+  const assigned = assignedIssue()
+  if (!assigned) {
+    closeIssue()
+    return
+  }
+  if (read(detail)?.id === assigned.id) return
+  set(detail, null)
+  set(issueLoading, true)
+  void openIssue(assigned.id).finally(() => set(issueLoading, false))
+}
+
 const connect = () =>
   run(async () => {
     await afterConnect(await plugin.request('redmine.configure', { url: read(formUrl), apiKey: read(formKey) }))
@@ -256,7 +293,7 @@ const connect = () =>
 
 const disconnect = () =>
   run(async () => {
-    set(detail, null)
+    closeIssue()
     set(issues, [])
     set(connection, await plugin.request('redmine.disconnect'))
   })
@@ -362,7 +399,9 @@ async function locate(context: { displayName: string; branch: string } | null): 
   if (seq !== locateSeq) return
   set(located, found)
   set(locateError, reason)
-  if (read(connection)?.configured) await loadIssues()
+  if (!read(connection)?.configured) return
+  showWorkspaceTask()
+  await loadIssues()
 }
 
 export function setup(ctx: PanelContext): void {
@@ -459,6 +498,8 @@ interface PickerProps {
   noneLabel?: string
   clearLabel?: string
   placeholder?: string
+  /** Closed, draw a compact label/value row (as in Orca's sidebars) with this visible label. */
+  inlineLabel?: string
   onChange: (value: string | null) => void
 }
 
@@ -468,7 +509,7 @@ interface PickerProps {
  * or pressing Enter for the first match, closes it.
  */
 function SearchPicker(props: PickerProps) {
-  const { id, state, label, value, options, noneLabel, clearLabel, placeholder, onChange } = props
+  const { id, state, label, value, options, noneLabel, clearLabel, placeholder, inlineLabel, onChange } = props
   const close = () => {
     set(state.open, false)
     set(state.filter, '')
@@ -478,6 +519,37 @@ function SearchPicker(props: PickerProps) {
     onChange(next)
   }
   const current = options.find((o) => o.value === value)
+
+  if (!read(state.open) && inlineLabel) {
+    // A label and the value as a link that truncates, so a long project name never widens the panel.
+    return (
+      <Row justify="between" align="center" gap="sm">
+        <Box shrink={false}>
+          <Text size="xs" muted>
+            {inlineLabel}
+          </Text>
+        </Box>
+        <Row gap="none" align="center">
+          <Text size="sm" truncate>
+            <Link key={`${id}-open`} onPress={() => set(state.open, true)}>
+              {current?.label ?? noneLabel ?? placeholder ?? ''}
+            </Link>
+          </Text>
+          <IconButton icon="expand" size="xs" variant="ghost" label={label} onPress={() => set(state.open, true)} />
+          {value && noneLabel ? (
+            <IconButton
+              key={`${id}-clear`}
+              icon="close"
+              size="xs"
+              label={clearLabel ?? noneLabel}
+              variant="ghost"
+              onPress={() => choose(null)}
+            />
+          ) : null}
+        </Row>
+      </Row>
+    )
+  }
 
   if (!read(state.open)) {
     return (
@@ -539,12 +611,26 @@ function SearchPicker(props: PickerProps) {
   )
 }
 
+/** A small uppercase section title, like Orca's sidebars ("COMMITTED ON BRANCH 8"), with an optional action. */
+function SectionHeader({ title, count, action }: { title: string; count?: number | string; action?: unknown }) {
+  const label = title.toLocaleUpperCase(env.locale)
+  return (
+    <Row justify="between" align="center" gap="xs">
+      <Text size="xs" weight="semibold" muted>
+        {count === undefined ? label : `${label}  ${count}`}
+      </Text>
+      {action ?? null}
+    </Row>
+  )
+}
+
 function ProjectPicker({ label }: { label: string }) {
   return (
     <SearchPicker
       id="redmine-project"
       state={redmineProjectPicker}
       label={label}
+      inlineLabel={t('workspace.redmineProject')}
       value={currentProject()}
       options={read(projects).map((p) => ({ value: p.identifier, label: p.name }))}
       noneLabel={t('projects.all')}
@@ -554,64 +640,110 @@ function ProjectPicker({ label }: { label: string }) {
   )
 }
 
-function WorkspaceCard() {
+/**
+ * The focused workspace, kept short: its Redmine project (shared by the Orca project) and, when the
+ * branch names a task not yet assigned, an offer to assign it. The workspace name and branch are
+ * already in Orca's own sidebar.
+ */
+function WorkspaceBar() {
   const ws = read(workspace)
   const loc = read(located)
   if (!ws) {
     return (
-      <Text muted size="sm">
+      <Text muted size="xs">
         {t('workspace.none')}
       </Text>
     )
   }
   const assigned = assignedIssue()
-  const suggested = ws.issueId && ws.issueId !== assigned?.id ? ws.issueId : null
+  const suggested = loc && ws.issueId && ws.issueId !== assigned?.id ? ws.issueId : null
   const reason = read(locateError)
   return (
-    <Card
-      title={ws.displayName}
-      description={
-        loc?.orcaProjectName
-          ? t('workspace.orcaProject', { name: loc.orcaProjectName })
-          : reason
-            ? t('workspace.orcaProjectUnknownReason', { reason })
-            : t('workspace.orcaProjectUnknown')
-      }
-    >
-      <Stack gap="sm">
-        {loc?.orcaProjectId && read(projects).length > 0 ? (
-          <ProjectPicker label={t('workspace.redmineProjectFor', { name: loc.orcaProjectName ?? '' })} />
-        ) : null}
-        {loc ? (
-          assigned ? (
-            <Row justify="between" gap="xs">
-              <Text size="sm" truncate>
-                <Link onPress={() => openIssue(assigned.id)}>{`#${assigned.id} ${assigned.subject}`}</Link>
-              </Text>
-              <IconButton icon="close" label={t('workspace.unassignTask')} variant="ghost" onPress={() => assignIssue(null)} />
-            </Row>
-          ) : (
-            <Text muted size="sm">
-              {t('workspace.noTask')}
-            </Text>
-          )
-        ) : null}
-        {loc && suggested ? (
-          <Button size="sm" variant="outline" icon="branch" onPress={() => assignById(suggested)}>
-            {t('workspace.assignFromBranch', { id: suggested })}
-          </Button>
-        ) : null}
+    <Stack gap="xs">
+      {loc?.orcaProjectId && read(projects).length > 0 ? (
+        <ProjectPicker label={t('workspace.redmineProjectFor', { name: loc.orcaProjectName ?? '' })} />
+      ) : null}
+      {!loc && read(projects).length > 0 ? (
+        <Text muted size="xs">
+          {reason ? t('workspace.orcaProjectUnknownReason', { reason }) : t('workspace.orcaProjectUnknown')}
+        </Text>
+      ) : null}
+      {suggested ? (
+        <Button size="sm" variant="outline" icon="branch" onPress={() => assignById(suggested)}>
+          {t('workspace.assignFromBranch', { id: suggested })}
+        </Button>
+      ) : null}
+    </Stack>
+  )
+}
+
+/** Which tasks the list shows: open (default), closed, any, or one status. */
+function StatusPicker() {
+  const value = read(statusFilter)
+  return (
+    <SearchPicker
+      id="status-filter"
+      state={statusPicker}
+      label={t('statusFilter.label')}
+      inlineLabel={t('statusFilter.label')}
+      value={value === 'open' ? null : value}
+      options={[
+        { value: 'closed', label: t('statusFilter.closed') },
+        { value: '*', label: t('statusFilter.any') },
+        ...read(statuses).map((s) => ({ value: String(s.id), label: s.name }))
+      ]}
+      noneLabel={t('statusFilter.open')}
+      clearLabel={t('statusFilter.clear')}
+      onChange={(v) => {
+        set(statusFilter, v ?? 'open')
+        void loadIssues()
+      }}
+    />
+  )
+}
+
+const CLOSED_HINT = /closed|cerrad|resuel|resolved|done|hecho|finaliz/i
+const BLOCKED_HINT = /block|bloque|rechaz|reject/i
+const ACTIVE_HINT = /progress|curso|doing|desarroll/i
+
+function statusTone(status: string): 'neutral' | 'accent' | 'success' | 'warning' | 'danger' {
+  if (BLOCKED_HINT.test(status)) return 'danger'
+  if (CLOSED_HINT.test(status)) return 'success'
+  if (ACTIVE_HINT.test(status)) return 'accent'
+  return 'neutral'
+}
+
+/** One task as a small card: number and state, the subject on its own lines, then the details. */
+function IssueRow({ issue, assigned, showProject }: { issue: IssueSummary; assigned: boolean; showProject: boolean }) {
+  const meta = [issue.priority, issue.assignee ?? t('issue.unassigned'), ...(showProject ? [issue.project] : [])]
+  return (
+    <ListItem key={`issue-${issue.id}`} current={assigned} onPress={() => openIssue(issue.id)}>
+      <Stack gap="xs">
+        <Row justify="between" align="center" gap="xs">
+          <Text size="xs" muted truncate>
+            {`#${issue.id} · ${issue.tracker}`}
+          </Text>
+          <Badge tone={statusTone(issue.status)}>{issue.status}</Badge>
+        </Row>
+        <Text size="sm" weight="medium">
+          {issue.subject}
+        </Text>
+        <Text size="xs" muted truncate>
+          {meta.join(' · ')}
+        </Text>
       </Stack>
-    </Card>
+    </ListItem>
   )
 }
 
 function IssueList() {
   const assigned = assignedIssue()
   const list = read(issues)
+  const filtered = currentProject() !== null
   return (
     <Stack gap="sm">
-      <WorkspaceCard />
+      <WorkspaceBar />
+      <StatusPicker />
       <Input
         label={t('list.search')}
         labelHidden
@@ -621,28 +753,32 @@ function IssueList() {
         onChange={(v) => set(search, v)}
         onSubmit={() => loadIssues()}
       />
-      <Switch
-        label={t('list.onlyMine')}
-        checked={read(onlyMine)}
-        onChange={(v) => {
-          set(onlyMine, v)
-          void loadIssues()
-        }}
-      />
+      <Row justify="between" align="center" gap="xs">
+        <SectionHeader
+          title={t('section.tasks')}
+          count={read(loading) ? undefined : list.length < read(total) ? `${list.length}/${read(total)}` : list.length}
+        />
+        <Switch
+          label={t('list.onlyMine')}
+          checked={read(onlyMine)}
+          onChange={(v) => {
+            set(onlyMine, v)
+            void loadIssues()
+          }}
+        />
+      </Row>
       {read(loading) ? (
         <Spinner label={t('list.loading')} />
       ) : list.length === 0 ? (
-        <EmptyState icon="check" title={t('list.empty')} description={t('list.emptyHint')} />
+        <EmptyState
+          icon="check"
+          title={read(statusFilter) === 'open' ? t('list.empty') : t('list.emptyAny')}
+          description={t('list.emptyHint')}
+        />
       ) : (
         <List label={t('list.count', { shown: list.length, total: read(total) })}>
           {list.map((issue) => (
-            <ListItem
-              title={`#${issue.id} ${issue.subject}`}
-              description={`${issue.project} · ${issue.status} · ${issue.priority}`}
-              icon={/bug|error/i.test(issue.tracker) ? 'bug' : 'file-text'}
-              current={issue.id === assigned?.id}
-              onPress={() => openIssue(issue.id)}
-            />
+            <IssueRow issue={issue} assigned={issue.id === assigned?.id} showProject={!filtered} />
           ))}
         </List>
       )}
@@ -731,41 +867,43 @@ function IssueView({ issue }: { issue: IssueDetail }) {
   const ws = read(workspace)
   const disabled = read(busy)
   const assigned = assignedIssue()
+  const isWorkspaceTask = assigned?.id === issue.id
+  const urgent = /urgent|immediate|inmediat|alta|high/i.test(issue.priority)
   return (
     <Stack gap="md">
-      <Row justify="between">
-        <Button variant="ghost" size="sm" onPress={() => set(detail, null)}>
-          {t('issue.back')}
-        </Button>
-        <IconButton icon="open-external" label={t('issue.openInRedmine')} onPress={() => shell.openExternal(issue.url)} />
-      </Row>
-      <Heading level={2}>{`#${issue.id} ${issue.subject}`}</Heading>
-      <Row gap="xs" wrap>
-        <Badge>{issue.tracker}</Badge>
-        <Badge tone="accent">{issue.status}</Badge>
-        <Badge tone={/urgent|immediate|inmediat|alta|high/i.test(issue.priority) ? 'warning' : 'neutral'}>
-          {issue.priority}
-        </Badge>
-        <Badge>{`${issue.doneRatio}%`}</Badge>
-      </Row>
-      {read(located) ? (
-        assigned?.id === issue.id ? (
-          <Row gap="xs">
-            <Badge tone="success">{t('issue.isWorkspaceTask')}</Badge>
-            <Button size="sm" variant="ghost" onPress={() => assignIssue(null)}>
-              {t('issue.unassign')}
+      {/* Header, like Orca's Checks panel: number and state, title, then a muted meta line. */}
+      <Stack gap="xs">
+        <Row justify="between" align="center">
+          <Row gap="xs" align="center">
+            <Button variant="ghost" size="sm" onPress={closeIssue}>
+              {t('issue.back')}
             </Button>
+            <Text size="sm" weight="semibold">{`#${issue.id}`}</Text>
+            <Badge tone="accent">{issue.status}</Badge>
           </Row>
-        ) : (
-          <Button size="sm" variant="outline" icon="link" onPress={() => assignIssue(issue)}>
-            {assigned ? t('issue.assignReplacing', { id: assigned.id }) : t('issue.assign')}
-          </Button>
-        )
-      ) : null}
-      <Text muted size="xs">
-        {`${issue.project} · ${issue.assignee ?? t('issue.unassigned')} · ${t('issue.updated')} `}
-        <RelativeTime at={Date.parse(issue.updatedOn) || Date.now()} />
-      </Text>
+          <IconButton
+            icon="open-external"
+            size="sm"
+            variant="ghost"
+            label={t('issue.openInRedmine')}
+            onPress={() => shell.openExternal(issue.url)}
+          />
+        </Row>
+        <Text weight="medium">{issue.subject}</Text>
+        <Text muted size="xs">
+          {`${issue.tracker} · ${t('issue.updated')} `}
+          <RelativeTime at={Date.parse(issue.updatedOn) || Date.now()} />
+        </Text>
+      </Stack>
+
+      <KeyValue
+        items={[
+          { label: t('issue.project'), value: issue.project },
+          { label: t('issue.assignee'), value: issue.assignee ?? t('issue.unassigned') },
+          { label: t('issue.priority'), value: issue.priority, ...(urgent ? { tone: 'warning' as const } : {}) },
+          { label: t('issue.done'), value: `${issue.doneRatio}%` }
+        ]}
+      />
 
       {read(statuses).length > 0 ? (
         <Select
@@ -777,68 +915,92 @@ function IssueView({ issue }: { issue: IssueDetail }) {
         />
       ) : null}
 
-      <Collapsible title={t('issue.description')} defaultOpen>
-        {issue.description ? <Markdown content={issue.description} /> : <Text muted>{t('issue.noDescription')}</Text>}
-      </Collapsible>
-
-      <LaunchSection issue={issue} />
-
-      <Collapsible title={t('send.title')} description={t('send.subtitle')}>
-        <Stack gap="sm">
-          {ws && ws.terminals.length > 0 ? (
-            <Select
-              label={t('send.terminal')}
-              value={read(terminalId)}
-              options={ws.terminals.map((term) => ({ value: term.id, label: term.title ?? term.id }))}
-              onChange={(v) => set(terminalId, v)}
-            />
-          ) : (
-            <Text muted size="sm">
-              {t('send.noTerminals')}
-            </Text>
-          )}
-          <Button icon="agent" disabled={disabled || !ws?.terminals.length} onPress={() => sendToAgent(issue)}>
-            {t('send.submit')}
-          </Button>
-        </Stack>
-      </Collapsible>
-
-      <Collapsible title={t('time.title')}>
-        <Stack gap="sm">
-          <Input label={t('time.hours')} placeholder="1.5" value={read(hours)} onChange={(v) => set(hours, v)} />
-          <Input label={t('time.comment')} value={read(timeComment)} onChange={(v) => set(timeComment, v)} />
-          <Button icon="calendar" disabled={disabled} onPress={() => logTime(issue)}>
-            {t('time.submit')}
-          </Button>
-        </Stack>
-      </Collapsible>
-
-      <Collapsible title={t('comment.title')}>
-        <Stack gap="sm">
-          <Textarea label={t('comment.label')} labelHidden rows={3} value={read(note)} onChange={(v) => set(note, v)} />
-          <Button icon="edit" disabled={disabled} onPress={() => addNote(issue)}>
-            {t('comment.submit')}
-          </Button>
-        </Stack>
-      </Collapsible>
-
-      <Collapsible title={t('issue.history', { count: issue.journals.length })}>
-        {issue.journals.length === 0 ? (
-          <Text muted>{t('issue.noComments')}</Text>
+      {read(located) ? (
+        isWorkspaceTask ? (
+          <Row justify="between" align="center" gap="xs">
+            <Badge tone="success">{t('issue.isWorkspaceTask')}</Badge>
+            <Button size="sm" variant="ghost" onPress={() => assignIssue(null)}>
+              {t('issue.unassign')}
+            </Button>
+          </Row>
         ) : (
+          <Button variant="outline" icon="link" onPress={() => assignIssue(issue)}>
+            {assigned ? t('issue.assignReplacing', { id: assigned.id }) : t('issue.assign')}
+          </Button>
+        )
+      ) : null}
+
+      <Separator />
+      <Stack gap="sm">
+        <SectionHeader title={t('issue.description')} />
+        {issue.description ? <Markdown content={textileToMarkdown(issue.description)} /> : <Text muted size="sm">{t('issue.noDescription')}</Text>}
+      </Stack>
+
+      <Separator />
+      <Stack gap="xs">
+        <SectionHeader title={t('section.agent')} />
+        <LaunchSection issue={issue} />
+        <Collapsible title={t('send.title')} description={t('send.subtitle')}>
           <Stack gap="sm">
+            {ws && ws.terminals.length > 0 ? (
+              <Select
+                label={t('send.terminal')}
+                value={read(terminalId)}
+                options={ws.terminals.map((term) => ({ value: term.id, label: term.title ?? term.id }))}
+                onChange={(v) => set(terminalId, v)}
+              />
+            ) : (
+              <Text muted size="sm">
+                {t('send.noTerminals')}
+              </Text>
+            )}
+            <Button icon="agent" disabled={disabled || !ws?.terminals.length} onPress={() => sendToAgent(issue)}>
+              {t('send.submit')}
+            </Button>
+          </Stack>
+        </Collapsible>
+      </Stack>
+
+      <Separator />
+      <Stack gap="sm">
+        <SectionHeader title={t('section.activity')} count={issue.journals.length} />
+        {issue.journals.length === 0 ? (
+          <Text muted size="sm">
+            {t('issue.noComments')}
+          </Text>
+        ) : (
+          <Stack gap="md">
             {issue.journals.map((j) => (
               <Stack gap="xs">
-                <Text size="xs" weight="medium">
-                  {`${j.author} · `}
-                  <RelativeTime at={Date.parse(j.createdOn) || Date.now()} />
-                </Text>
-                <Markdown content={j.notes} />
+                <Row justify="between" align="center" gap="xs">
+                  <Text size="xs" weight="semibold" truncate>
+                    {j.author}
+                  </Text>
+                  <RelativeTime at={Date.parse(j.createdOn) || Date.now()} muted />
+                </Row>
+                <Markdown content={textileToMarkdown(j.notes)} />
               </Stack>
             ))}
           </Stack>
         )}
-      </Collapsible>
+        <Collapsible title={t('comment.title')}>
+          <Stack gap="sm">
+            <Textarea label={t('comment.label')} labelHidden rows={3} value={read(note)} onChange={(v) => set(note, v)} />
+            <Button icon="edit" disabled={disabled} onPress={() => addNote(issue)}>
+              {t('comment.submit')}
+            </Button>
+          </Stack>
+        </Collapsible>
+        <Collapsible title={t('time.title')}>
+          <Stack gap="sm">
+            <Input label={t('time.hours')} placeholder="1.5" value={read(hours)} onChange={(v) => set(hours, v)} />
+            <Input label={t('time.comment')} value={read(timeComment)} onChange={(v) => set(timeComment, v)} />
+            <Button icon="calendar" disabled={disabled} onPress={() => logTime(issue)}>
+              {t('time.submit')}
+            </Button>
+          </Stack>
+        </Collapsible>
+      </Stack>
     </Stack>
   )
 }
@@ -851,18 +1013,26 @@ export default function Panel() {
   return (
     <Stack gap="md">
       {status?.configured ? (
-        <Row justify="between">
-          <Row gap="xs">
-            <Heading>{t('header.title')}</Heading>
-            {status.user ? <Badge>{status.user.name || status.user.login}</Badge> : null}
+        <Row justify="between" align="center">
+          <Row gap="xs" align="center">
+            <Text size="sm" weight="semibold">
+              {t('header.title')}
+            </Text>
+            {status.user ? (
+              <Text size="sm" muted truncate>
+                {status.user.name || status.user.login}
+              </Text>
+            ) : null}
           </Row>
-          <Row gap="xs">
+          <Row gap="none" align="center">
             <IconButton
               icon="refresh"
+              size="sm"
+              variant="ghost"
               label={t('header.reload')}
               onPress={() => (current ? openIssue(current.id) : loadIssues())}
             />
-            <IconButton icon="close" label={t('header.disconnect')} variant="ghost" onPress={disconnect} />
+            <IconButton icon="close" size="sm" label={t('header.disconnect')} variant="ghost" onPress={disconnect} />
           </Row>
         </Row>
       ) : null}
@@ -882,6 +1052,8 @@ export default function Panel() {
         <ConnectForm />
       ) : current ? (
         <IssueView issue={current} />
+      ) : read(issueLoading) ? (
+        <Spinner label={t('issue.loading')} />
       ) : (
         <IssueList />
       )}

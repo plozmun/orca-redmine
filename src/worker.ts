@@ -90,12 +90,13 @@ export default function activate(orca: OrcaWorkerApi): void {
     return status(orca)
   })
 
-  orca.panels.handle('redmine.issues', async ({ mine, search, projectId }) => {
+  orca.panels.handle('redmine.issues', async ({ mine, search, projectId, status }) => {
     const limit = await orca.settings.get(LIMIT_SETTING)
     return (await client(orca)).listIssues({
       mine,
       search,
       projectId: projectId || undefined,
+      status,
       limit: typeof limit === 'number' ? limit : 50
     })
   })

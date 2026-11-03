@@ -24,7 +24,7 @@ declare module 'orca' {
     'redmine.disconnect': { output: ConnectionStatus }
     /** Open issues, newest first. `search`: subject text or `#123`. `projectId`: id or identifier (includes subprojects). */
     'redmine.issues': {
-      input: { mine: boolean; search?: string; projectId?: string }
+      input: { mine: boolean; search?: string; projectId?: string; status?: string }
       output: { issues: IssueSummary[]; total: number }
     }
     'redmine.issue': { input: { id: number }; output: IssueDetail }

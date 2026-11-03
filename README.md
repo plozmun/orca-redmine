@@ -15,8 +15,8 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 
 ## Features
 
-- **Redmine panel** (flag icon, right sidebar): your open tasks (or everyone's), searchable by subject or `#number`.
-- **Task detail**: description, history, status, priority and done ratio.
+- **Redmine panel** (flag icon, right sidebar): your tasks (or everyone's), searchable by subject or `#number`, filtered by status (open by default, closed, any, or one status; the choice is kept).
+- **Task detail**: description, history, status, priority and done ratio, laid out like Orca's own sidebar panels (compact header, key/value details, sections). Redmine's Textile (numbered lists, `h2.` headings, `!image.png!`, `<pre>`) is shown as Markdown. When the focused workspace has a task assigned, the panel opens it (also after switching workspaces); a workspace without one shows the list. *Back* lets you browse the list meanwhile.
 - **Change status**, **comment** and **log time** without leaving Orca.
 - **A Redmine project per Orca project**: map each Orca project (repository) once to a Redmine project, with a filter to find it among many. All its workspaces use it to filter the list. Remove it with ✕.
 - **A task per workspace**: each workspace can have one task assigned, or none. Stored by the stable worktree id, so renaming the workspace keeps it. When the branch contains a number (`feature/12345-login`), the panel offers to assign it.
@@ -39,12 +39,13 @@ orca-plugin.json        Manifest: panel, command, settings and capabilities
 src/redmine.ts          Redmine REST API client (no Orca dependency)
 src/orca-workspaces.ts  Locates the focused workspace and creates worktrees through the `orca` CLI
 src/launch.ts           Workspace name and agent prompt for a task
+src/textile.ts          Textile → Markdown for descriptions and comments
 src/i18n/               Translations: en.ts (source), es.ts, index.ts (translate, locale resolution)
 src/protocol.ts         Typed panel <-> worker contract
 src/worker.ts           Node worker: network, secrets, CLI, terminal, palette command
 src/panel.tsx           Orca components panel (TSX, no build step)
 src/**/*.test.ts(x)     Tests (`orca plugin test`)
-src/panel.check.ts      Scenarios for `orca plugin check`
+src/panel.check.ts      Scenarios for `orca plugin check` (`list` and `detail` use sample data, for `orca plugin shot . --scenario`)
 ```
 
 ## Settings

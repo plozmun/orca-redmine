@@ -21,7 +21,8 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 - **A Redmine project per Orca project**: map each Orca project (repository) once to a Redmine project, with a filter to find it among many. All its workspaces use it to filter the list. Remove it with ✕.
 - **A task per workspace**: each workspace can have one task assigned, or none. Stored by the stable worktree id, so renaming the workspace keeps it. When the branch contains a number (`feature/12345-login`), the panel offers to assign it.
 - **Launch an agent in a new workspace**: from a task, create a worktree in an Orca project, start an agent with the task context, and assign the task to the new workspace — like Orca does for GitHub, GitLab, Jira and Linear.
-- **Send to agent**: types the task prompt into a terminal of the current workspace. It **does not press Enter**, so you can review it first.
+- **Send to agent**: types the task prompt into a terminal of the current workspace. It **does not press Enter**, so you can review it first. A terminal line cannot carry the description and comments, so they go in a file (`<tmp>/orca-redmine/<id>.md`, readable only by you) that the prompt points to.
+- **Works without redmine-cli**: agents get the task text from the plugin. When the [`redmine` CLI](#redmine-cli) is installed, the prompt also tells the agent it can use it to update the task; when it is not, the panel suggests installing it.
 - **Command palette**: `Redmine: my open tasks`.
 - **English and Spanish UI**, following Orca's language.
 
@@ -40,6 +41,7 @@ assets/                 Plugin icon and cover for the plugin page
 src/redmine.ts          Redmine REST API client (no Orca dependency)
 src/orca-workspaces.ts  Locates the focused workspace and creates worktrees through the `orca` CLI
 src/launch.ts           Workspace name and agent prompt for a task
+src/agent-files.ts      Context file for "Send to agent" and the `redmine` CLI check
 src/textile.ts          Textile → Markdown for descriptions and comments
 src/i18n/               Translations: en.ts (source), es.ts, index.ts (translate, locale resolution)
 src/protocol.ts         Typed panel <-> worker contract
@@ -58,7 +60,7 @@ In Orca: **Settings → Plugins → Redmine**.
 | Redmine URL                              | —              | Base address. The API key is entered in the panel and stored encrypted.                                          |
 | Tasks per page                           | 50             | How many tasks the list loads.                                                                                   |
 | Instructions for a new-workspace agent   | empty          | Template for what the agent is asked to do; the task context is appended after it. Editable per launch.         |
-| Prompt for “Send to agent”               | empty          | Template typed into a terminal (no Enter; newlines become spaces).                                               |
+| Prompt for “Send to agent”               | empty          | Template typed into a terminal (no Enter; newlines become spaces). `{contextFile}` places the context file's path; without it, a sentence pointing to the file is appended. |
 | Comments in the agent context            | Latest 5       | `No comments`, `Latest 5 comments` or `Full history`. Changeable per launch in the panel.                       |
 | Maximum context size (characters)        | 12000          | Cap for the context block; when the history does not fit, the oldest comments are left out first.              |
 
@@ -81,6 +83,13 @@ The panel shows every string through `t(key)`, in Orca's UI language (`env.local
 Text handed to agents as context (the fenced task block) stays in English, as Orca does. The manifest (name, command title, settings) has no localization support in Orca, so it is English only.
 
 To add a language: copy `src/i18n/es.ts` to `src/i18n/<lang>.ts`, translate it, and register it in `src/i18n/index.ts`. A test checks that every catalog has the same keys and placeholders as English.
+
+## redmine-cli
+
+The plugin talks to the Redmine REST API itself and does not need [redmine-cli](https://github.com/aarondpn/redmine-cli). An agent does, though, to comment on, change or log time on the task by itself. The worker checks `redmine --version` (cached for 60 s; set `REDMINE_CLI` if it is not on the worker's PATH):
+
+- installed: the launch and send prompts add *"The `redmine` CLI is available to read or update task #N."* The CLI keeps its own login (`redmine auth`); the plugin does not share its API key.
+- not installed: the Agent section suggests installing it and its agent skill.
 
 ## How the plugin knows a workspace's project
 

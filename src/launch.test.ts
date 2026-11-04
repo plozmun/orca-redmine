@@ -51,6 +51,9 @@ test('empty instructions fall back to the localized default; long context is cap
   const long = { ...issue, description: 'x'.repeat(30000) }
   assert.ok(buildLaunchPrompt(long, '  ', 'en').startsWith('Work on Redmine task #37046'))
   assert.ok(buildLaunchPrompt(long, '', 'es-ES').startsWith('Trabaja en la tarea de Redmine #37046'))
+  assert.ok(buildLaunchPrompt(issue, 'Do it', 'en', { comments: 'none', redmineCli: true }).startsWith(
+    'Do it\nThe `redmine` CLI is available to read or update task #37046.\n\nLinked Redmine context'
+  ))
   const prompt = buildLaunchPrompt(long, 'x', 'en')
   assert.ok(prompt.includes('[linked context truncated]'))
   assert.ok(prompt.length < CONTEXT_MAX_CHARS + 200)
@@ -92,4 +95,11 @@ test('prompt templates from Settings', () => {
   assert.equal(defaultInstructions(issue, 'es', '  '), `Trabaja en la tarea de Redmine #37046 "${issue.subject}": ${issue.url}`)
   assert.equal(sendPrompt(issue, 'en', 'Look at #{id}\n\n  then {url}'), 'Look at #37046 then https://redmine.test/issues/37046')
   assert.ok(sendPrompt(issue, 'en', null).startsWith('Work on Redmine task #37046'))
+  // The context goes in a file: appended by default, or placed with {contextFile}.
+  assert.equal(
+    sendPrompt(issue, 'en', 'Do #{id}', { contextFile: '/tmp/x/37046.md' }),
+    'Do #37046 Read its description and comments in /tmp/x/37046.md first.'
+  )
+  assert.equal(sendPrompt(issue, 'en', 'Do #{id}, see {contextFile}', { contextFile: '/tmp/x/37046.md' }), 'Do #37046, see /tmp/x/37046.md')
+  assert.ok(sendPrompt(issue, 'en', 'Do #{id}', { redmineCli: true }).endsWith('The `redmine` CLI is available to read or update task #37046.'))
 })

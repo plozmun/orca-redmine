@@ -3,7 +3,8 @@
 // secrets (OS keychain). Errors are thrown as RedmineError codes for the panel to translate.
 import type { OrcaWorkerApi } from 'orca/worker'
 import { systemLocale, translate } from './i18n'
-import { asCommentsMode, buildLaunchPrompt, CONTEXT_MAX_CHARS, sendPrompt, workspaceNameFor } from './launch'
+import { detectRedmineCli, writeContextFile } from './agent-files'
+import { asCommentsMode, buildContextBlock, buildLaunchPrompt, CONTEXT_MAX_CHARS, sendPrompt, workspaceNameFor } from './launch'
 import {
   clearOrcaCache,
   createWorktree,
@@ -29,6 +30,19 @@ export function setOrcaCreator(creator: (o: CreateWorktreeOptions) => Promise<Cr
   orcaCreator = creator
 }
 
+let redmineCli: () => Promise<string | null> = detectRedmineCli
+let contextDir: string | undefined
+
+/** Tests: replaces the `redmine --version` check. */
+export function setRedmineCliDetector(detector: () => Promise<string | null>): void {
+  redmineCli = detector
+}
+
+/** Tests: where the context files for "Send to agent" go (default: `<tmp>/orca-redmine`). */
+export function setContextDir(dir: string | undefined): void {
+  contextDir = dir
+}
+
 const URL_SETTING = 'url'
 const LIMIT_SETTING = 'limit'
 const API_KEY = 'apiKey'
@@ -52,6 +66,15 @@ function errorParts(error: unknown): { errorCode: string; errorDetail: string } 
 async function savedUrl(orca: OrcaWorkerApi): Promise<string | null> {
   const url = await orca.settings.get(URL_SETTING)
   return typeof url === 'string' && url.trim() ? url.trim() : null
+}
+
+/** The context options from Settings, as the agent gets them. */
+async function contextOptions(orca: OrcaWorkerApi) {
+  const maxChars = await orca.settings.get(MAX_CHARS_SETTING)
+  return {
+    comments: asCommentsMode(await orca.settings.get(COMMENTS_SETTING)),
+    maxChars: typeof maxChars === 'number' ? maxChars : CONTEXT_MAX_CHARS
+  }
 }
 
 async function client(orca: OrcaWorkerApi): Promise<RedmineClient> {
@@ -146,6 +169,8 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   orca.panels.handle('redmine.timeEntries', async ({ id }) => (await client(orca)).myTimeEntries(id))
 
+  orca.panels.handle('redmine.cli', async () => ({ version: await redmineCli() }))
+
   orca.panels.handle('redmine.orcaProjects', async () =>
     (await orcaLister()).projects
       .map((p) => ({ id: p.id, name: p.displayName ?? p.id }))
@@ -155,15 +180,15 @@ export default function activate(orca: OrcaWorkerApi): void {
   orca.panels.handle('redmine.launchWorkspace', async (input) => {
     const issue = await (await client(orca)).getIssue(input.issueId)
     const name = workspaceNameFor(issue)
-    const comments = input.comments ?? asCommentsMode(await orca.settings.get(COMMENTS_SETTING))
-    const maxChars = await orca.settings.get(MAX_CHARS_SETTING)
+    const options = await contextOptions(orca)
     const created = await orcaCreator({
       orcaProjectId: input.orcaProjectId,
       name,
       agent: input.agent,
       prompt: buildLaunchPrompt(issue, input.instructions, input.locale, {
-        comments,
-        maxChars: typeof maxChars === 'number' ? maxChars : CONTEXT_MAX_CHARS
+        ...options,
+        comments: input.comments ?? options.comments,
+        redmineCli: Boolean(await redmineCli())
       }),
       baseBranch: input.baseBranch,
       comment: `Redmine #${issue.id}: ${issue.subject}`,
@@ -175,7 +200,12 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   orca.panels.handle('redmine.sendToAgent', async ({ id, terminalId, locale }) => {
     const issue = await (await client(orca)).getIssue(id)
-    const text = sendPrompt(issue, locale, await stringSetting(orca, SEND_PROMPT_SETTING))
+    // The terminal gets one line; the description and comments go in a file the line points to.
+    const contextFile = await writeContextFile(issue.id, buildContextBlock(issue, await contextOptions(orca)), contextDir)
+    const text = sendPrompt(issue, locale, await stringSetting(orca, SEND_PROMPT_SETTING), {
+      contextFile,
+      redmineCli: Boolean(await redmineCli())
+    })
     // No Enter: the person reviews the text in the terminal before submitting it.
     return orca.host.call('terminal.sendText', { terminalId, text, enter: false })
   })

@@ -77,15 +77,35 @@ test('lists issues and notifies panels after logging time', async () => {
   await worker.deactivate()
 })
 
-test('types the task prompt into the terminal in the panel language, without Enter', async () => {
-  stubFetch({ '/issues/77.json': { issue } })
+test('types the task prompt into the terminal in the panel language, without Enter, with the context in a file', async () => {
+  const { mkdtemp, readFile, stat } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = await mkdtemp(join(tmpdir(), 'redmine-test-'))
+  main.setContextDir(dir)
+  main.setRedmineCliDetector(async () => null)
+  stubFetch({ '/issues/77.json': { issue: { ...issue, description: 'Integrate payments' } } })
   const host = mockHost({ ...configured, results: { 'terminal.sendText': { accepted: true } } })
   const worker = await mountWorker(main, { host })
   assert.deepEqual(await worker.request('redmine.sendToAgent', { id: 77, terminalId: 't1', locale: 'es' }), { accepted: true })
   const [params] = host.callsOf('terminal.sendText') as { terminalId: string; text: string; enter: boolean }[]
   assert.equal(params.terminalId, 't1')
   assert.equal(params.enter, false)
+  const file = join(dir, '77.md')
   assert.match(params.text, /^Trabaja en la tarea de Redmine #77 "Checkout screen"/)
+  assert.ok(params.text.includes(`en ${file}`))
+  assert.ok(!params.text.includes('redmine` CLI') && !params.text.includes('CLI `redmine`'))
+  const context = await readFile(file, 'utf8')
+  assert.ok(context.includes('--- BEGIN LINKED WORK ITEM CONTEXT ---'))
+  assert.ok(context.includes('Integrate payments'))
+  assert.equal((await stat(file)).mode & 0o777, 0o600)
+
+  main.setRedmineCliDetector(async () => 'redmine version 2.14.0')
+  await worker.request('redmine.sendToAgent', { id: 77, terminalId: 't1', locale: 'en' })
+  const second = (host.callsOf('terminal.sendText') as { text: string }[])[1]
+  assert.ok(second.text.includes('The `redmine` CLI is available to read or update task #77.'))
+  assert.deepEqual(await worker.request('redmine.cli'), { version: 'redmine version 2.14.0' })
+  main.setContextDir(undefined)
   await worker.deactivate()
 })
 
@@ -129,6 +149,7 @@ test('creates the workspace with the task name and prompt', async () => {
     seen.push(options)
     return { workspaceKey: 'wt-new', displayName: '77-checkout-screen', branch: 'pablo/77-checkout-screen', path: '/p', launch: 'terminal' }
   })
+  main.setRedmineCliDetector(async () => null)
   const worker = await mountWorker(main, { host: mockHost(configured) })
   const created = await worker.request('redmine.launchWorkspace', {
     issueId: 77,
@@ -146,6 +167,7 @@ test('creates the workspace with the task name and prompt', async () => {
   assert.equal(options.comment, 'Redmine #77: Checkout screen')
   assert.ok(options.prompt.startsWith('Do it\n'))
   assert.ok(options.prompt.includes('Integrate payments'))
+  assert.ok(!options.prompt.includes('CLI'))
   await worker.deactivate()
 })
 
@@ -169,6 +191,12 @@ test('launch uses the contextComments and contextMaxChars settings unless the pa
 })
 
 test('send to agent uses the sendPrompt setting template', async () => {
+  const { mkdtemp } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = await mkdtemp(join(tmpdir(), 'redmine-test-'))
+  main.setContextDir(dir)
+  main.setRedmineCliDetector(async () => null)
   stubFetch({ '/issues/77.json': { issue } })
   const host = mockHost({
     ...configured,
@@ -178,6 +206,7 @@ test('send to agent uses the sendPrompt setting template', async () => {
   const worker = await mountWorker(main, { host })
   await worker.request('redmine.sendToAgent', { id: 77, terminalId: 't1', locale: 'en' })
   const [params] = host.callsOf('terminal.sendText') as { text: string }[]
-  assert.equal(params.text, 'Take #77: Checkout screen')
+  assert.equal(params.text, `Take #77: Checkout screen Read its description and comments in ${join(dir, '77.md')} first.`)
+  main.setContextDir(undefined)
   await worker.deactivate()
 })

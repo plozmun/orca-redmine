@@ -136,6 +136,18 @@ test('lists tasks, opens one and sends the prompt to the terminal', async () => 
   await view.unmount()
 })
 
+test('recommends redmine-cli only when it is not installed', async () => {
+  const hint = 'install redmine-cli'
+  for (const [version, shown] of [[null, true], ['redmine version 2.14.0', false]] as const) {
+    const view = await mount(panel, { host: connectedHost([], { 'redmine.cli': () => ({ version }) }), locale: 'en' })
+    await view.emit('workspace.changed', ws('feature/4077-pay', [{ id: 't1' }]))
+    await view.press({ type: 'ListItem' })
+    assert.equal(drawn(view, hint), shown)
+    assert.deepEqual(view.errors, [])
+    await view.unmount()
+  }
+})
+
 test('the Redmine project is set per Orca project and shared by its workspaces', async () => {
   const asked: unknown[] = []
   const view = await mount(panel, { host: connectedHost(asked), locale: 'en' })

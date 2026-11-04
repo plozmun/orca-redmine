@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "redmine-tasks",
   "name": "Redmine",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "license": "MIT",
   "description": "Your Redmine tasks in Orca's sidebar, linked to workspaces and agents.",
   "icon": "assets/icon.png",
@@ -62,7 +62,7 @@
       {
         "key": "sendPrompt",
         "title": "Prompt for “Send to agent”",
-        "description": "Typed into a terminal of the current workspace, without pressing Enter. Newlines become spaces. Placeholders: {id} {subject} {url} {project} {tracker} {status} {priority} {assignee}. Leave empty for a default in Orca's language.",
+        "description": "Typed into a terminal of the current workspace, without pressing Enter. Newlines become spaces. The task description and comments go in a file; {contextFile} places its path, otherwise a sentence pointing to it is appended. Placeholders: {id} {subject} {url} {project} {tracker} {status} {priority} {assignee} {contextFile}. Leave empty for a default in Orca's language.",
         "type": "string",
         "default": "",
         "multiline": true,

@@ -99,12 +99,16 @@ export const es: Messages = {
   'launch.doneAgent': '{agent} lanzado.',
   'launch.assigned': 'Tarea asignada.',
 
+  'agent.cliHint': 'Tienes el CLI `redmine` para leer o actualizar la tarea #{id}.',
+  'agent.noCli': 'El agente recibe el texto de la tarea desde el plugin. Para que también pueda comentarla o actualizarla, instala redmine-cli (el comando `redmine`) y su skill para agentes.',
+
   'send.title': 'Enviar al agente',
   'send.subtitle': 'Escribe el prompt de la tarea en un terminal del workspace actual',
   'send.terminal': 'Terminal',
   'send.noTerminals': 'Abre un workspace con un terminal (Claude, Codex…) para enviarle la tarea.',
   'send.submit': 'Enviar prompt',
-  'send.prompt': 'Trabaja en la tarea de Redmine #{id} "{subject}" ({url}). Lee primero la descripción y los comentarios.',
+  'send.prompt': 'Trabaja en la tarea de Redmine #{id} "{subject}" ({url}).',
+  'send.contextFile': 'Lee primero su descripción y comentarios en {path}.',
   'send.accepted': 'Prompt escrito en el terminal: revísalo y pulsa Enter',
   'send.rejected': 'El terminal no aceptó el texto',
 

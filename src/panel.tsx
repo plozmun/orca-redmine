@@ -97,6 +97,8 @@ const timeEntries = atom<TimeEntry[] | null>(null)
 const timeEntriesError = atom<string | null>(null)
 /** Opening the focused workspace's task: the panel shows a spinner instead of the list. */
 const issueLoading = atom(false)
+/** `redmine --version`, null when redmine-cli is not installed, undefined until known. */
+const redmineCli = atom<string | null | undefined>(undefined)
 
 // Kept across panel runs.
 const search = atom('redmine.search', '', { persist: 'plugin' })
@@ -463,6 +465,8 @@ export function setup(ctx: PanelContext): void {
     })
   )
   void plugin.request('redmine.status').then(afterConnect, (e) => set(error, errorText(e)))
+  // Only for a hint: on failure, say nothing.
+  void plugin.request('redmine.cli').then(({ version }) => set(redmineCli, version), () => undefined)
 }
 
 function ConnectForm() {
@@ -1036,6 +1040,11 @@ function IssueView({ issue }: { issue: IssueDetail }) {
       <Separator />
       <Stack gap="xs">
         <SectionHeader title={t('section.agent')} />
+        {read(redmineCli) === null ? (
+          <Text muted size="xs">
+            {t('agent.noCli')}
+          </Text>
+        ) : null}
         <LaunchSection issue={issue} />
         <Collapsible title={t('send.title')} description={t('send.subtitle')}>
           <Stack gap="sm">

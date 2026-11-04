@@ -57,7 +57,12 @@ declare module 'orca' {
       }
       output: CreatedWorktree & { name: string }
     }
-    /** Types the task prompt into a terminal (no Enter): the `sendPrompt` setting, else a default in the panel's language. */
+    /** Whether the `redmine` CLI (redmine-cli) is installed: `redmine --version`, or null. */
+    'redmine.cli': { output: { version: string | null } }
+    /**
+     * Types the task prompt into a terminal (no Enter): the `sendPrompt` setting, else a default in the
+     * panel's language. The context goes in a file (`<tmp>/orca-redmine/<id>.md`) the prompt points to.
+     */
     'redmine.sendToAgent': { input: { id: number; terminalId: string; locale: string }; output: { accepted: boolean } }
   }
   interface PluginPanelEvents {

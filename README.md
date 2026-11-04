@@ -141,6 +141,10 @@ Note: with Orca 1.4.246, `orca plugin types` fails because the installed app lac
 - An activity picker for time entries (`/enumerations/time_entry_activities.json`) when Redmine has no default activity.
 - More languages in `src/i18n/`.
 
+## License
+
+Code: [MIT](LICENSE). The images in `assets/` are an exception, see below.
+
 ## Credits
 
 The plugin icon and cover (`assets/`) use the Redmine logo by Martin Herr, released under [CC BY-SA 2.5](https://creativecommons.org/licenses/by-sa/2.5/) ([source](https://github.com/edavis10/redmine_logo/)). These images are shared under the same license. Redmine is a trademark of its owners; this plugin is not affiliated with the Redmine project.

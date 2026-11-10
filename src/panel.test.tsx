@@ -1,4 +1,5 @@
 // `orca plugin test .` runs this in Node with the same runtime and checks Orca uses.
+import { storage } from 'orca'
 import { assert, hostError, mockHost, mount, test } from 'orca/testing'
 import * as panel from './panel'
 
@@ -27,11 +28,13 @@ const located: Record<string, { workspaceKey: string; orcaProjectId: string; orc
 function connectedHost(
   asked: unknown[] = [],
   extra: Record<string, (input: never) => unknown> = {},
-  settings: Record<string, string | number> = {}
+  settings: Record<string, string | number> = {},
+  storage: Record<string, unknown> = {}
 ) {
   return mockHost({
     settings,
-    capabilities: ['workspace:read', 'settings:own', 'secrets:own', 'terminal:send'],
+    storage: storage as never,
+    capabilities: ['workspace:read', 'settings:own', 'secrets:own', 'terminal:send', 'storage:own'],
     requests: {
       'redmine.status': () => ({ configured: true, url: 'https://redmine.test', user: { login: 'pablo', name: 'Pablo' } }),
       'redmine.issues': (input) => {
@@ -171,7 +174,7 @@ test('the Redmine project is set per Orca project and shared by its workspaces',
   await view.emit('workspace.changed', ws('shop-a'))
   await view.press({ label: 'Remove project' })
   assert.equal(pickerValue(view, RP), 'No project (all)')
-  assert.deepEqual(view.persisted.plugin['redmine.projectByOrcaProject'], {})
+  assert.deepEqual(view.persisted.storage['links.projectByOrcaProject'], {})
   assert.deepEqual(view.errors, [])
   assert.deepEqual(view.warnings, [])
   await view.unmount()
@@ -185,7 +188,7 @@ test('each workspace can have one task assigned, or none', async () => {
   await view.press({ type: 'ListItem' })
   await view.press({ text: 'Assign to this workspace' })
   assert.ok(view.find({ text: 'Task of this workspace' }))
-  assert.deepEqual(view.persisted.plugin['redmine.issueByWorkspace'], { 'wt-a': { id: 4077, subject: 'Checkout screen' } })
+  assert.deepEqual(view.persisted.storage['links.issueByWorkspace'], { 'wt-a': { id: 4077, subject: 'Checkout screen' } })
 
   // The other workspace of the same project has no task: switching to it leaves the detail.
   await view.emit('workspace.changed', ws('shop-b'))
@@ -198,7 +201,7 @@ test('each workspace can have one task assigned, or none', async () => {
 
   // Unassign from the detail.
   await view.press({ text: 'Unassign' })
-  assert.deepEqual(view.persisted.plugin['redmine.issueByWorkspace'], {})
+  assert.deepEqual(view.persisted.storage['links.issueByWorkspace'], {})
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
@@ -268,7 +271,7 @@ test('launches the agent in a new workspace and assigns it the task', async () =
       baseBranch: 'develop'
     }
   })
-  assert.deepEqual(view.persisted.plugin['redmine.issueByWorkspace'], { 'wt-new': { id: 4077, subject: 'Checkout screen' } })
+  assert.deepEqual(view.persisted.storage['links.issueByWorkspace'], { 'wt-new': { id: 4077, subject: 'Checkout screen' } })
   assert.ok(view.find({ text: 'Workspace “4077-checkout-screen” created on branch pablo/4077-checkout-screen. Claude Code launched. Task assigned.' }))
   assert.deepEqual(view.errors, [])
   await view.unmount()
@@ -473,7 +476,48 @@ test('a workspace found without its Orca project still links tasks and says why 
   assert.ok(drawn(view, 'Could not identify the Orca project: Could not run the Orca CLI (spawn orca ENOENT)'))
   assert.ok(!drawn(view, 'Redmine project for'))
   await view.press({ text: 'Assign #4077 (from branch)' })
-  assert.deepEqual(view.persisted.plugin['redmine.issueByWorkspace'], { 'wt-pay': { id: 4077, subject: 'Checkout screen' } })
+  assert.deepEqual(view.persisted.storage['links.issueByWorkspace'], { 'wt-pay': { id: 4077, subject: 'Checkout screen' } })
   assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('0.1.x links move once into the storage shared with the worker', async () => {
+  const legacy = {
+    plugin: {
+      'redmine.issueByWorkspace': { 'wt-a': { id: 4077, subject: 'Checkout screen' }, 'wt-b': { id: 9, subject: 'Old' } },
+      'redmine.projectByOrcaProject': { 'git:shop': 'shop' }
+    }
+  }
+  // Storage already has a link for wt-b (made by the worker): it wins.
+  const host = connectedHost([], {}, {}, { 'links.issueByWorkspace': { 'wt-b': { id: 10, subject: 'New' } } })
+  let view = await mount(panel, { host, locale: 'en', persisted: legacy })
+  assert.deepEqual(view.persisted.storage['links.issueByWorkspace'], {
+    'wt-a': { id: 4077, subject: 'Checkout screen' },
+    'wt-b': { id: 10, subject: 'New' }
+  })
+  assert.deepEqual(view.persisted.storage['links.projectByOrcaProject'], { 'git:shop': 'shop' })
+  assert.equal(view.persisted.storage['links.migrated'], true)
+  // The old copy stays for a downgrade.
+  assert.deepEqual(view.persisted.plugin['redmine.projectByOrcaProject'], { 'git:shop': 'shop' })
+
+  // Once migrated, an unlink is not undone by the old copy.
+  await view.emit('workspace.changed', ws('shop-a'))
+  await view.press({ text: 'Unassign' })
+  assert.equal((view.persisted.storage['links.issueByWorkspace'] as Record<string, unknown>)['wt-a'], undefined)
+  await view.unmount()
+  view = await mount(panel, { host, locale: 'en', persisted: legacy })
+  assert.equal((view.persisted.storage['links.issueByWorkspace'] as Record<string, unknown>)['wt-a'], undefined)
+  await view.unmount()
+})
+
+test('a link the worker makes for the focused workspace opens its task', async () => {
+  const host = connectedHost()
+  const view = await mount(panel, { host, locale: 'en' })
+  await view.emit('workspace.changed', ws('shop-a'))
+  assert.ok(!drawn(view, 'Integrate'))
+  // As the worker does when it links a new workspace: a write to the shared storage.
+  await storage.set('links.issueByWorkspace', { 'wt-a': { id: 4077, subject: 'Checkout screen' } })
+  await view.settled()
+  assert.ok(drawn(view, 'Integrate'))
   await view.unmount()
 })

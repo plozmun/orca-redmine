@@ -19,7 +19,10 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 - **Task detail**: description, history, status, priority and done ratio, laid out like Orca's own sidebar panels (compact header, key/value details, sections). Redmine's Textile (numbered lists, `h2.` headings, `!image.png!`, `<pre>`) is shown as Markdown. When the focused workspace has a task assigned, the panel opens it (also after switching workspaces); a workspace without one shows the list. *Back* lets you browse the list meanwhile.
 - **Change status**, **comment** and **log time** without leaving Orca.
 - **A Redmine project per Orca project**: map each Orca project (repository) once to a Redmine project, with a filter to find it among many. All its workspaces use it to filter the list. Remove it with ✕.
-- **A task per workspace**: each workspace can have one task assigned, or none. Stored by the stable worktree id, so renaming the workspace keeps it. When the branch contains a number (`feature/12345-login`), the panel offers to assign it.
+- **A task per workspace**: each workspace can have one task assigned, or none. Stored by the stable worktree id, so renaming the workspace keeps it. When the workspace name or branch names a task (`12345-login`, `feature/12345-login`, `#12345`, `rm-12345`), the panel offers to assign it.
+- **Automatic link at creation**: a worktree created any way (Orca's dialog, the CLI, automations, other agents) whose name or branch names a task you can see in Redmine is linked to it. If its Orca project is mapped to a Redmine project, the task must be in that project or a subproject. A workspace that already has another task is left alone.
+- **Team branch names** (optional): with a branch template such as `{tracker}/{id}-{slug}`, a new task workspace gets `feature/4077-checkout-with-saved-cards`. If Redmine does not answer within 1.5 s, Orca's branch is kept; a creation is never refused.
+- **Record the start in Redmine** (optional, off by default): a comment naming the workspace and branch, and optionally a move from the first open status (New) to the next one.
 - **Launch an agent in a new workspace**: from a task, create a worktree in an Orca project, start an agent with the task context, and assign the task to the new workspace — like Orca does for GitHub, GitLab, Jira and Linear.
 - **Send to agent**: types the task prompt into a terminal of the current workspace. It **does not press Enter**, so you can review it first. A terminal line cannot carry the description and comments, so they go in a file (`<tmp>/orca-redmine/<id>.md`, readable only by you) that the prompt points to.
 - **Works without redmine-cli**: agents get the task text from the plugin. When the [`redmine` CLI](#redmine-cli) is installed, the prompt also tells the agent it can use it to update the task; when it is not, the panel suggests installing it.
@@ -41,6 +44,8 @@ assets/                 Plugin icon and cover for the plugin page
 src/redmine.ts          Redmine REST API client (no Orca dependency)
 src/orca-workspaces.ts  Locates the focused workspace (host listing, then `orca` CLI) and creates worktrees
 src/launch.ts           Workspace name and agent prompt for a task
+src/task-ref.ts         Task number in a workspace name or branch; branch template
+src/links.ts            Storage keys for workspace ↔ task links
 src/agent-files.ts      Context file for "Send to agent" and the `redmine` CLI check
 src/textile.ts          Textile → Markdown for descriptions and comments
 src/i18n/               Translations: en.ts (source), es.ts, index.ts (translate, locale resolution)
@@ -63,6 +68,8 @@ In Orca: **Settings → Plugins → Redmine**.
 | Prompt for “Send to agent”               | empty          | Template typed into a terminal (no Enter; newlines become spaces). `{contextFile}` places the context file's path; without it, a sentence pointing to the file is appended. |
 | Comments in the agent context            | Latest 5       | `No comments`, `Latest 5 comments` or `Full history`. Changeable per launch in the panel.                       |
 | Maximum context size (characters)        | 12000          | Cap for the context block; when the history does not fit, the oldest comments are left out first.              |
+| Branch name for task workspaces          | empty          | Branch template for new workspaces that name a task: `{id}`, `{slug}` (task title), `{tracker}`, `{project}`, lower-cased and made git-safe. Empty keeps Orca's branch. |
+| When a workspace is created for a task   | Nothing        | `Nothing`, `Add a comment` (*Work started in Orca workspace `name` (branch `branch`)*, in the machine's language), or also move a task in the first open status to the next open status. |
 
 Templates accept `{id}`, `{subject}`, `{url}`, `{project}`, `{tracker}`, `{status}`, `{priority}` and `{assignee}`. Empty means a default in Orca's language. For example:
 
@@ -95,7 +102,9 @@ The plugin talks to the Redmine REST API itself and does not need [redmine-cli](
 
 The plugin API gives the focused workspace's name, branch and terminals. The worker matches the worktree by name and branch in Orca's `workspace.list` to get its stable id, which is what tasks are linked to. Orca's plugin API does not say which Orca project a workspace belongs to, so for that the worker runs `orca worktree list` and `orca project list` (cached for 15 s). If the CLI is not on the worker's PATH, set `ORCA_CLI`. Without the CLI, linked tasks and the branch suggestion still work; only the Redmine project filter and creating workspaces need it. On Orca versions without `workspace.list`, the CLI is used for the stable id too.
 
-Mappings (Orca project → Redmine project, workspace → task) live in the plugin's storage. Orca rejects Redmine URLs in `orca reference`, so they do not appear as native workspace links.
+Mappings (Orca project → Redmine project, workspace → task) live in the plugin's storage (`storage:own`), shared by the panel and the worker; 0.1.x kept them in the panel only and they are copied over once. Orca rejects Redmine URLs in `orca reference`, so they do not appear as native workspace links.
+
+When a worktree is created, Orca's `workspace.created` event names it by the CLI's `<repoId>::<path>` id, so the worker looks it up in `orca worktree list` (and `workspace.list` by path) to get the same stable key. Task references: the name (else the branch) starting with a number of 3+ digits (`4077-…`, last path segment), or containing `#N`, `redmine-N` or `rm-N`. A number after a word (`release-2026`, `bug-4321`) is not taken.
 
 ## Creating a workspace from a task
 
@@ -130,6 +139,14 @@ It gives up after 115 s (a panel request waits at most 120 s); a slow repo setup
 | `secrets:own`    | API key, encrypted in the OS keychain                      |
 | `workspace:read` | Name, branch and terminals of the focused workspace        |
 | `terminal:send`  | Type the task prompt into the chosen terminal              |
+| `storage:own`    | Workspace ↔ task links, shared by the panel and the worker |
+
+Hooks and events (Orca waits only for the hook, at most 2 s, and carries on if it fails):
+
+| Hook / event               | Why                                                                     |
+| -------------------------- | ----------------------------------------------------------------------- |
+| `workspace.create.before`  | Apply the branch template (only when one is set)                        |
+| `workspace.created` event  | Link the new worktree to the task it names; optional comment/status    |
 
 ## Development
 
@@ -146,7 +163,6 @@ Note: with Orca 1.4.246, `orca plugin types` fails because the installed app lac
 
 ## Ideas
 
-- When `workspace.created` fires, comment on the task or move it to "In progress".
 - An activity picker for time entries (`/enumerations/time_entry_activities.json`) when Redmine has no default activity.
 - More languages in `src/i18n/`.
 

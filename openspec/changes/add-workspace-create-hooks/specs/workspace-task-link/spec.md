@@ -20,7 +20,7 @@ Each workspace SHALL have at most one linked task, identified by the workspace's
 - **THEN** the panel shows #4077 as the workspace's task
 
 ### Requirement: Task reference detection
-A workspace name or branch SHALL be taken to name task N when it starts with `N-`, contains `#N`, or contains `redmine-N` or `rm-N` (case-insensitive), with N a positive integer. When the name and branch name different tasks, the name wins.
+A workspace name or branch SHALL be taken to name task N when its last path segment starts with N of at least 3 digits followed by `-`, `_`, a space or the end, or when it contains `#N`, `redmine-N` or `rm-N` (case-insensitive), with N a positive integer. A number following a word (`release-2026`) SHALL NOT be taken. When the name and branch name different tasks, the name wins.
 
 #### Scenario: Branch with prefix
 - **WHEN** the branch is `feature/12345-login`
@@ -58,7 +58,7 @@ After a workspace is created that names task N existing in Redmine and visible t
 - **THEN** no link is made and nothing is written to Redmine
 
 ### Requirement: Optional task update when work starts
-When a workspace becomes linked at creation (automatic link or plugin launch) and `onWorkspaceCreated` is `comment` or `start`, the plugin SHALL add a comment to the task naming the workspace and branch; with `start` it SHALL also move a task in its tracker's default status to the first status Redmine marks as not closed and not default. With `nothing` it SHALL write nothing to Redmine.
+When a workspace becomes linked at creation (automatic link or plugin launch) and `onWorkspaceCreated` is `comment` or `start`, the plugin SHALL add a comment to the task naming the workspace and branch; with `start` it SHALL also move a task in the first open status (in Redmine's status order) to the next open status. The work start SHALL be recorded at most once per workspace. With `nothing` it SHALL write nothing to Redmine.
 
 #### Scenario: Start
 - **GIVEN** `onWorkspaceCreated` is `start` and task #4081 is New

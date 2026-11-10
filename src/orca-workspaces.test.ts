@@ -1,6 +1,7 @@
 import { assert, test } from 'orca/testing'
 import {
   createWorktreeArgs,
+  describeWorktree,
   keyFromHostId,
   matchHostWorkspace,
   matchWorktree,
@@ -94,4 +95,11 @@ test('the host listing uses the same matching rule as the CLI and ignores folder
 test('the Orca project of a key comes from the CLI listing', () => {
   assert.deepEqual(projectForKey(listing, 'wt2:local:ccc'), { orcaProjectId: 'git:gitlab.example.com/web/site', orcaProjectName: 'site' })
   assert.equal(projectForKey(listing, 'wt2:local:zzz'), null)
+})
+
+test('a worktree named by its CLI id or link key', () => {
+  const byId = describeWorktree(listing, { id: 'r1::/p/kyb-login' })
+  assert.deepEqual(byId, { workspaceKey: 'wt2:local:bbb', name: 'login', orcaProjectId: 'git:gitlab.example.com/backend/kyb', orcaProjectName: 'kyb' })
+  assert.equal(describeWorktree(listing, { key: 'wt2:local:ccc' })?.orcaProjectName, 'site')
+  assert.equal(describeWorktree(listing, { id: 'nope', key: null }), null)
 })

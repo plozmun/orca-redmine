@@ -33,7 +33,7 @@ const detail = {
 }
 
 const sample = {
-  capabilities: ['workspace:read', 'settings:own', 'secrets:own', 'terminal:send'],
+  capabilities: ['workspace:read', 'settings:own', 'secrets:own', 'terminal:send', 'storage:own'],
   requests: {
     'redmine.status': () => ({ configured: true, url: 'https://redmine.example.com', user: { login: 'ana', name: 'Ana García' } }),
     'redmine.issues': () => ({ issues, total: 12 }),

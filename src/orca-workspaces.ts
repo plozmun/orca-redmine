@@ -79,11 +79,25 @@ export function projectForKey(listing: OrcaListing, key: string): Pick<LocatedWo
   return row ? projectOf(listing, row) : null
 }
 
+/**
+ * A worktree named the way Orca's workspace events name it. `workspace.created` gives the CLI row's
+ * `id` (`<repoId>::<path>`, checked on Orca 1.4.255), not the `identity:` form of `workspace.list`,
+ * so it is matched by `id`, or by link key when one is known.
+ */
+export function describeWorktree(
+  listing: OrcaListing,
+  ref: { id?: string; key?: string | null }
+): (LocatedWorkspace & { name: string | null }) | null {
+  const row = listing.worktrees.find((w) => (ref.id && w.id === ref.id) || (ref.key && cliKey(w) === ref.key))
+  return row ? { workspaceKey: cliKey(row), name: row.displayName ?? null, ...projectOf(listing, row) } : null
+}
+
 /** A row of the host's `workspace.list`. */
 export interface HostWorkspaceRow {
   id: string
   kind: 'worktree' | 'folder'
   name: string
+  path?: string
   branch: string | null
 }
 

@@ -349,3 +349,184 @@ test('locate falls back to the CLI when the host refuses workspace.list', async 
 })
 
 type OrcaListingLike = Awaited<ReturnType<Parameters<typeof main.setOrcaLister>[0]>>
+
+// --- Workspace creation: branch convention, automatic link, optional task update ---
+
+const task4077 = {
+  ...issue,
+  id: 4077,
+  subject: 'Checkout with saved cards',
+  tracker: { name: 'Feature' },
+  project: { id: 2, name: 'iOS' },
+  status: { id: 1, name: 'New' }
+}
+
+/** Redmine with task 4077 in project 2 (`ios`, child of `client`), recording writes. */
+function redmineWith4077(delayMs = 0) {
+  const writes: { url: string; method: string; body?: unknown }[] = []
+  globalThis.fetch = (async (url: string, init: { method: string; body?: string }) => {
+    if (delayMs) await new Promise((r) => setTimeout(r, delayMs))
+    if (init.method !== 'GET') {
+      writes.push({ url, method: init.method, body: init.body ? JSON.parse(init.body) : undefined })
+      return { ok: true, status: 204, text: async () => '' }
+    }
+    const routes: Record<string, unknown> = {
+      '/issues/4077.json': { issue: task4077 },
+      '/issue_statuses.json': {
+        issue_statuses: [
+          { id: 1, name: 'New', is_closed: false },
+          { id: 2, name: 'In progress', is_closed: false },
+          { id: 5, name: 'Closed', is_closed: true }
+        ]
+      },
+      '/projects.json': {
+        projects: [
+          { id: 1, identifier: 'client', name: 'Client', status: 1 },
+          { id: 2, identifier: 'ios', name: 'iOS', parent: { id: 1 }, status: 1 },
+          { id: 3, identifier: 'web', name: 'Web', status: 1 }
+        ],
+        total_count: 3
+      }
+    }
+    const key = Object.keys(routes).find((k) => url.includes(k))
+    return { ok: Boolean(key), status: key ? 200 : 404, text: async () => (key ? JSON.stringify(routes[key]) : '') }
+  }) as unknown as typeof fetch
+  return writes
+}
+
+const creation = { kind: 'worktree' as const, projectId: 'git:x/shop', name: '4077 checkout', branch: 'pablo/4077-checkout' }
+
+test('workspace.create.before applies the branch template to a task workspace', async () => {
+  redmineWith4077()
+  const host = mockHost({ ...configured, settings: { ...configured.settings, branchTemplate: '{tracker}/{id}-{slug}' } })
+  const worker = await mountWorker(main, { host })
+  const decision = (await worker.hooks.fire('workspace.create.before', creation)) as { event?: unknown }
+  assert.deepEqual(decision.event, { ...creation, branch: 'feature/4077-checkout-with-saved-cards' })
+  await worker.deactivate()
+})
+
+test('workspace.create.before passes without a template, a task, Redmine or in time', async () => {
+  const fire = async (settings: Record<string, unknown>, event = creation, delayMs = 0) => {
+    redmineWith4077(delayMs)
+    const worker = await mountWorker(main, { host: mockHost({ ...configured, settings: { ...configured.settings, ...settings } }) })
+    const decision = await worker.hooks.fire('workspace.create.before', event)
+    await worker.deactivate()
+    return decision
+  }
+  const template = { branchTemplate: '{id}-{slug}' }
+  // Passing: no refusal, and the event (if any) keeps Orca's branch.
+  const passed = (d: unknown) => {
+    const decision = (d ?? {}) as { deny?: string; event?: { branch?: string } }
+    return !decision.deny && (decision.event?.branch ?? creation.branch) !== 'feature/4077-checkout-with-saved-cards' && !decision.event?.branch?.includes('saved')
+  }
+  assert.ok(passed(await fire({})))
+  assert.ok(passed(await fire(template, { ...creation, name: 'login', branch: 'main' })))
+  assert.ok(passed(await fire(template, { ...creation, name: '9999-x', branch: undefined as never })))
+  assert.ok(passed(await fire(template, { ...creation, kind: 'folder' })))
+  assert.ok(passed(await fire(template, creation, 1800)))
+})
+
+type Linked = Record<string, { id: number; subject: string }>
+const created = (name: string, extra: Partial<{ kind: 'worktree' | 'folder'; branch: string; workspaceId: string }> = {}) => ({
+  workspaceId: extra.workspaceId ?? `identity:wt-${name}`,
+  kind: extra.kind ?? ('worktree' as const),
+  path: `/repos/shop/${name}`,
+  branch: extra.branch ?? `refs/heads/pablo/${name}`
+})
+
+async function createdWorker(options: { settings?: Record<string, unknown>; storage?: Record<string, unknown>; orcaProject?: string | null } = {}) {
+  const writes = redmineWith4077()
+  main.setOrcaLister(async () => ({
+    projects: [],
+    worktrees:
+      options.orcaProject === null
+        ? []
+        : [{ id: 'r::/repos/shop/4081-ios-pass', identity: { key: 'wt-4081-ios-pass' }, projectId: options.orcaProject ?? 'git:x/shop', displayName: '4081-ios-pass' },
+           { id: 'r::/repos/shop/4077-checkout', identity: { key: 'wt-4077-checkout' }, projectId: options.orcaProject ?? 'git:x/shop', displayName: '4077-checkout' }]
+  }))
+  const host = mockHost({
+    ...configured,
+    settings: { ...configured.settings, ...options.settings },
+    storage: options.storage as never,
+    results: { 'workspace.list': { workspaces: [], truncated: false } }
+  })
+  const worker = await mountWorker(main, { host })
+  const links = () => host.data().storage['links.issueByWorkspace'] as Linked | undefined
+  return { worker, host, writes, links }
+}
+
+test('a created workspace that names a task is linked to it, and Redmine is left alone by default', async () => {
+  const { worker, writes, links } = await createdWorker()
+  await worker.emit('workspace.created', created('4077-checkout'))
+  assert.deepEqual(links(), { 'wt-4077-checkout': { id: 4077, subject: 'Checkout with saved cards' } })
+  assert.deepEqual(writes, [])
+  await worker.deactivate()
+})
+
+test('no link for folders, unknown tasks, other projects or workspaces already linked elsewhere', async () => {
+  let w = await createdWorker()
+  await w.worker.emit('workspace.created', created('4077-checkout', { kind: 'folder' }))
+  await w.worker.emit('workspace.created', created('99999-test'))
+  await w.worker.emit('workspace.created', created('login', { branch: 'refs/heads/main' }))
+  assert.equal(w.links(), undefined)
+  await w.worker.deactivate()
+
+  // The Orca project is mapped to `web`; task 4077 is in `ios`.
+  w = await createdWorker({ storage: { 'links.projectByOrcaProject': { 'git:x/shop': 'web' } } })
+  await w.worker.emit('workspace.created', created('4077-checkout'))
+  assert.equal(w.links(), undefined)
+  await w.worker.deactivate()
+
+  // Mapped to the parent project: subprojects count.
+  w = await createdWorker({ storage: { 'links.projectByOrcaProject': { 'git:x/shop': 'client' } } })
+  await w.worker.emit('workspace.created', created('4077-checkout'))
+  assert.equal(w.links()?.['wt-4077-checkout']?.id, 4077)
+  await w.worker.deactivate()
+
+  const other = { 'wt-4077-checkout': { id: 1, subject: 'Other' } }
+  w = await createdWorker({ storage: { 'links.issueByWorkspace': other }, settings: { onWorkspaceCreated: 'comment' } })
+  await w.worker.emit('workspace.created', created('4077-checkout'))
+  assert.deepEqual(w.links(), other)
+  assert.deepEqual(w.writes, [])
+  await w.worker.deactivate()
+})
+
+test('onWorkspaceCreated comments once, and start moves a New task to the next open status', async () => {
+  let w = await createdWorker({ settings: { onWorkspaceCreated: 'comment' } })
+  await w.worker.emit('workspace.created', created('4077-checkout'))
+  await w.worker.emit('workspace.created', created('4077-checkout'))
+  assert.equal(w.writes.length, 1)
+  assert.match(JSON.stringify(w.writes[0].body), /workspace `4077-checkout` \(branch `pablo\/4077-checkout`\)/)
+  await w.worker.deactivate()
+
+  w = await createdWorker({ settings: { onWorkspaceCreated: 'start' } })
+  await w.worker.emit('workspace.created', created('4077-checkout'))
+  assert.deepEqual(
+    w.writes.map((x) => x.body),
+    [{ issue: { notes: 'Work started in Orca workspace `4077-checkout` (branch `pablo/4077-checkout`).' } }, { issue: { status_id: 2 } }]
+  )
+  assert.deepEqual(w.worker.posts.at(-1), { event: 'redmine.issueChanged', payload: { id: 4077 } })
+  await w.worker.deactivate()
+
+  // Already linked to the same task (the panel's own launch): still recorded once.
+  w = await createdWorker({ settings: { onWorkspaceCreated: 'comment' }, storage: { 'links.issueByWorkspace': { 'wt-4077-checkout': { id: 4077, subject: 'x' } } } })
+  await w.worker.emit('workspace.created', created('4077-checkout'))
+  assert.equal(w.writes.length, 1)
+  await w.worker.deactivate()
+})
+
+test('the created event names the workspace by its CLI id on current Orca; the link uses the stable key', async () => {
+  const { worker, links } = await createdWorker()
+  // As Orca 1.4.255 sends it: `<repoId>::<path>`.
+  await worker.emit('workspace.created', created('4077-checkout', { workspaceId: 'r::/repos/shop/4077-checkout' }))
+  assert.deepEqual(links(), { 'wt-4077-checkout': { id: 4077, subject: 'Checkout with saved cards' } })
+  await worker.deactivate()
+})
+
+test('without a stable key for the created workspace nothing is linked', async () => {
+  const { worker, links } = await createdWorker({ orcaProject: null })
+  await worker.emit('workspace.created', created('4077-checkout', { workspaceId: 'r::/repos/shop/4077-checkout' }))
+  assert.equal(links(), undefined)
+  assert.ok(worker.logs.some((l) => l.startsWith('workspace.created: no link key')))
+  await worker.deactivate()
+})

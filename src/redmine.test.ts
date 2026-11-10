@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { issueIdFromBranch, RedmineClient, RedmineError } from './redmine'
+import { projectSubtree, RedmineClient, RedmineError } from './redmine'
 
 function fakeFetch(responses: Record<string, { status?: number; body?: unknown }>) {
   const calls: { url: string; method: string; headers: Record<string, string>; body?: string }[] = []
@@ -107,14 +107,6 @@ test('projects get their parent path, sorted, archived ones dropped', async () =
   assert.equal(calls.length, 1)
 })
 
-test('issue number from the branch', () => {
-  assert.equal(issueIdFromBranch('feature/4321-login'), 4321)
-  assert.equal(issueIdFromBranch('bug-4321'), 4321)
-  assert.equal(issueIdFromBranch('4321_fix'), 4321)
-  assert.equal(issueIdFromBranch('main'), null)
-  assert.equal(issueIdFromBranch('release/v2'), null)
-  assert.equal(issueIdFromBranch(null), null)
-})
 
 test('filters issues by status; unknown values mean open', async () => {
   const { calls, impl } = fakeFetch({ '/issues.json': { body: { issues: [], total_count: 0 } } })
@@ -148,4 +140,16 @@ test('my time entries on a task, newest first', async () => {
     [2, 2, '2026-11-03', 'Testing'],
     [1, 1.5, '2026-11-01', 'Development']
   ])
+})
+
+test('a project and its subprojects, by identifier or id', () => {
+  const projects = [
+    { id: 1, identifier: 'client', name: 'Client' },
+    { id: 2, identifier: 'ios', name: 'Client › iOS', parentId: 1 },
+    { id: 3, identifier: 'ios-pay', name: 'Client › iOS › Pay', parentId: 2 },
+    { id: 4, identifier: 'web', name: 'Web' }
+  ]
+  assert.deepEqual([...projectSubtree(projects, 'client')].sort(), [1, 2, 3])
+  assert.deepEqual([...projectSubtree(projects, '2')].sort(), [2, 3])
+  assert.deepEqual([...projectSubtree(projects, 'nope')], [])
 })

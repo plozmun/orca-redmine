@@ -11,7 +11,7 @@
     "alt": "The Redmine logo on a white tile beside the title “Redmine for Orca” and the tagline “Your Redmine tasks, tied to workspaces and agents.”"
   },
   "engines": {
-    "orca": ">=1.4.246"
+    "orca": ">=1.4.248"
   },
   "execution": "trusted-worker",
   "pluginApi": 1,
@@ -94,6 +94,42 @@
         "default": 12000,
         "minimum": 2000,
         "maximum": 60000
+      },
+      {
+        "key": "branchTemplate",
+        "title": "Branch name for task workspaces",
+        "description": "When a new workspace's name or branch names a Redmine task (4077-…, #4077, rm-4077), its branch is set to this template. Placeholders: {id} {slug} (task title) {tracker} {project}. Example: {tracker}/{id}-{slug}. Empty: Orca's branch is kept.",
+        "type": "string",
+        "default": "",
+        "maxLength": 200,
+        "placeholder": "{tracker}/{id}-{slug}"
+      },
+      {
+        "key": "onWorkspaceCreated",
+        "title": "When a workspace is created for a task",
+        "description": "What the plugin writes to Redmine when a new workspace gets linked to a task, whoever created it.",
+        "type": "string",
+        "default": "nothing",
+        "enum": [
+          "nothing",
+          "comment",
+          "start"
+        ],
+        "enumLabels": [
+          "Nothing",
+          "Add a comment",
+          "Add a comment and move a new task to the next open status"
+        ]
+      }
+    ],
+    "hooks": [
+      {
+        "event": "workspace.create.before"
+      }
+    ],
+    "events": [
+      {
+        "on": "workspace.created"
       }
     ]
   },
@@ -109,6 +145,9 @@
     },
     {
       "kind": "terminal:send"
+    },
+    {
+      "kind": "storage:own"
     }
   ]
 }

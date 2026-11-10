@@ -15,6 +15,7 @@ export const es: Messages = {
 
   'header.title': 'Redmine',
   'header.reload': 'Recargar',
+  'redmine.workStarted': 'Trabajo iniciado en el workspace de Orca `{name}` (rama `{branch}`).',
   'header.connection': 'Conexión con Redmine',
   'disconnect.title': '¿Desconectar de Redmine?',
   'disconnect.body': 'Conectado a {url} como {user}. Al desconectar se borra la API key de este ordenador; tendrás que pegarla de nuevo para reconectar.',

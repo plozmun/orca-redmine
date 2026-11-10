@@ -32,6 +32,7 @@ import {
   shell,
   Spinner,
   Stack,
+  storage,
   Switch,
   Tab,
   Tabs,
@@ -46,7 +47,9 @@ import { asCommentsMode, defaultInstructions, RECENT_COMMENTS, workspaceNameFor,
 import type { LocatedWorkspace } from './orca-workspaces'
 import type { ConnectionStatus } from './protocol'
 import { textileToMarkdown } from './textile'
-import { issueIdFromBranch, type IssueDetail, type IssueStatus, type IssueSummary, type Project, type TimeEntry } from './redmine'
+import { ISSUE_BY_WORKSPACE, LINKS_MIGRATED, PROJECT_BY_ORCA_PROJECT, type AssignedIssue } from './links'
+import { taskRefFromWorkspace } from './task-ref'
+import { type IssueDetail, type IssueStatus, type IssueSummary, type Project, type TimeEntry } from './redmine'
 
 function t(key: MessageKey, vars?: Record<string, string | number>): string {
   return translate(env.locale, key, vars)
@@ -68,11 +71,6 @@ interface WorkspaceInfo {
   displayName: string
   terminals: { id: string; title?: string }[]
   issueId: number | null
-}
-
-interface AssignedIssue {
-  id: number
-  subject: string
 }
 
 const connection = atom<ConnectionStatus | null>(null)
@@ -110,9 +108,23 @@ const statusFilter = atom('redmine.statusFilter', 'open', { persist: 'plugin' })
 
 // The Redmine project is set per Orca project (repository) and shared by all its workspaces; the
 // task is set per workspace (stable worktree id). Nothing is inherited from another workspace.
+// Both live in the plugin's storage, shared with the worker, which links workspaces at creation.
 const ALL = '*'
-const projectByOrcaProject = atom<Record<string, string>>('redmine.projectByOrcaProject', {}, { persist: 'plugin' })
-const issueByWorkspace = atom<Record<string, AssignedIssue>>('redmine.issueByWorkspace', {}, { persist: 'plugin' })
+const projectByOrcaProject = atom<Record<string, string>>(PROJECT_BY_ORCA_PROJECT, {}, { persist: 'storage' })
+const issueByWorkspace = atom<Record<string, AssignedIssue>>(ISSUE_BY_WORKSPACE, {}, { persist: 'storage' })
+const linksMigrated = atom(LINKS_MIGRATED, false, { persist: 'storage' })
+// Where 0.1.x kept them (panel-only). Copied once into storage and left as they are, so going back
+// to 0.1.x still finds them; to be removed in a later release.
+const legacyProjectByOrcaProject = atom<Record<string, string>>('redmine.projectByOrcaProject', {}, { persist: 'plugin' })
+const legacyIssueByWorkspace = atom<Record<string, AssignedIssue>>('redmine.issueByWorkspace', {}, { persist: 'plugin' })
+
+/** One-time copy of the 0.1.x links into storage; links already in storage win. */
+function migrateLinks(): void {
+  if (read(linksMigrated)) return
+  set(issueByWorkspace, { ...read(legacyIssueByWorkspace), ...read(issueByWorkspace) })
+  set(projectByOrcaProject, { ...read(legacyProjectByOrcaProject), ...read(projectByOrcaProject) })
+  set(linksMigrated, true)
+}
 const located = atom<LocatedWorkspace | null>(null)
 const locateError = atom<string | null>(null)
 
@@ -438,6 +450,21 @@ async function locate(context: { displayName: string; branch: string } | null): 
 }
 
 export function setup(ctx: PanelContext): void {
+  migrateLinks()
+  // The worker linked a workspace (at creation): if it is the focused one, open its task.
+  ctx.subscriptions.push(
+    storage.onDidChange(({ key }) => {
+      if (key !== ISSUE_BY_WORKSPACE) return
+      // Read the store itself: the atom may not hold the new value yet.
+      void storage.get(ISSUE_BY_WORKSPACE).then((links) => {
+        const workspaceKey = read(located)?.workspaceKey
+        const linked = workspaceKey ? (links as Record<string, AssignedIssue> | null)?.[workspaceKey] : undefined
+        if (!linked || read(detail) || read(issueLoading)) return
+        set(issueLoading, true)
+        void openIssue(linked.id).finally(() => set(issueLoading, false))
+      })
+    })
+  )
   // Fires once on subscribe, then whenever the focused workspace or its terminals change.
   ctx.subscriptions.push(
     on('workspace.changed', ({ context }) => {
@@ -447,7 +474,7 @@ export function setup(ctx: PanelContext): void {
         if (previous) void locate(null)
         return
       }
-      const info = { ...context, issueId: issueIdFromBranch(context.branch) }
+      const info = { ...context, issueId: taskRefFromWorkspace(context.displayName, context.branch) }
       set(workspace, info)
       // Another workspace may belong to another Orca project: locate it and reload the list.
       if (previous?.displayName !== info.displayName || previous?.branch !== info.branch) void locate(info)

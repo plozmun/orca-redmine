@@ -55,6 +55,26 @@ export interface Project {
   identifier: string
   /** Including the parent path: `Client › iOS App`. */
   name: string
+  parentId?: number
+}
+
+/**
+ * Ids of the project named by `ref` (identifier or numeric id) and all its subprojects, as Redmine's
+ * `project_id` filter includes them. Empty when `ref` is not in the list.
+ */
+export function projectSubtree(projects: readonly Project[], ref: string): Set<number> {
+  const root = projects.find((p) => p.identifier === ref || String(p.id) === ref)
+  const ids = new Set<number>(root ? [root.id] : [])
+  for (let grew = Boolean(root); grew; ) {
+    grew = false
+    for (const p of projects) {
+      if (p.parentId !== undefined && ids.has(p.parentId) && !ids.has(p.id)) {
+        ids.add(p.id)
+        grew = true
+      }
+    }
+  }
+  return ids
 }
 
 export interface ListOptions {
@@ -91,12 +111,6 @@ type FetchLike = (url: string, init: { method: string; headers: Record<string, s
   text(): Promise<string>
 }>
 
-/** Issue number in a branch such as `feature/12345-login`, `12345_fix` or `bug-12345` (3+ digits). */
-export function issueIdFromBranch(branch: string | null | undefined): number | null {
-  if (!branch) return null
-  const match = /(?:^|[/_#-])(\d{3,})(?=$|[/_-])/.exec(branch)
-  return match ? Number(match[1]) : null
-}
 
 export function normalizeBaseUrl(url: string): string {
   const trimmed = url.trim().replace(/\/+$/, '')
@@ -215,7 +229,7 @@ export class RedmineClient {
     }
     return raw
       .filter((p) => p.status === undefined || p.status === 1)
-      .map((p) => ({ id: p.id, identifier: p.identifier, name: fullName(p) }))
+      .map((p) => ({ id: p.id, identifier: p.identifier, name: fullName(p), ...(p.parent ? { parentId: p.parent.id } : {}) }))
       .sort((a, b) => a.name.localeCompare(b.name))
   }
 

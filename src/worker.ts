@@ -8,10 +8,13 @@ import { asCommentsMode, buildContextBlock, buildLaunchPrompt, CONTEXT_MAX_CHARS
 import {
   clearOrcaCache,
   createWorktree,
+  describeWorktree,
   listOrca,
+  keyFromHostId,
   matchHostWorkspace,
   matchWorktree,
   projectForKey,
+  shortBranch,
   type CreatedWorktree,
   type CreateWorktreeOptions,
   type FocusedContext,
@@ -20,7 +23,9 @@ import {
   type OrcaListing
 } from './orca-workspaces'
 import type { ConnectionStatus } from './protocol'
-import { normalizeBaseUrl, RedmineClient, RedmineError } from './redmine'
+import { normalizeBaseUrl, projectSubtree, RedmineClient, RedmineError, type IssueDetail } from './redmine'
+import { branchFromTemplate, taskRefFromWorkspace } from './task-ref'
+import { ISSUE_BY_WORKSPACE, PROJECT_BY_ORCA_PROJECT, type AssignedIssue } from './links'
 
 let orcaLister: () => Promise<OrcaListing> = listOrca
 let orcaCreator: (o: CreateWorktreeOptions) => Promise<CreatedWorktree> = createWorktree
@@ -54,6 +59,10 @@ const API_KEY = 'apiKey'
 const SEND_PROMPT_SETTING = 'sendPrompt'
 const COMMENTS_SETTING = 'contextComments'
 const MAX_CHARS_SETTING = 'contextMaxChars'
+const BRANCH_TEMPLATE_SETTING = 'branchTemplate'
+const ON_CREATED_SETTING = 'onWorkspaceCreated'
+/** A hook must answer within 2 s; the Redmine lookup gets this much of it. */
+const HOOK_BUDGET_MS = 1500
 
 async function stringSetting(orca: OrcaWorkerApi, key: string): Promise<string | null> {
   const value = await orca.settings.get(key)
@@ -133,7 +142,134 @@ async function projectWithCli(key: string) {
   return projectForKey(await orcaLister(), key)
 }
 
+/** Rejects with `timeout` after `ms`; the work itself is not cancelled. */
+function within<T>(ms: number, work: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new RedmineError('timeout', `no answer in ${ms} ms`)), ms)
+  })
+  return Promise.race([work, late]).finally(() => clearTimeout(timer))
+}
+
+async function readMap<T>(orca: OrcaWorkerApi, key: string): Promise<Record<string, T>> {
+  const value = await orca.storage.get(key)
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, T>) : {}
+}
+
+/**
+ * Link key, name and Orca project of a just-created worktree. The event's `workspaceId` is the CLI
+ * row id (`<repoId>::<path>`) on Orca 1.4.255, though the `identity:` form is accepted too; the host
+ * listing (matched by id or path) and the CLI listing each fill in what they can.
+ */
+async function describeCreated(orca: OrcaWorkerApi, workspaceId: string, path: string) {
+  let key = keyFromHostId(workspaceId)
+  let name: string | null = null
+  if (orca.host.has('workspace.list')) {
+    try {
+      const { workspaces } = (await orca.host.call('workspace.list', {})) as { workspaces: HostWorkspaceRow[] }
+      const row = workspaces.find((w) => w.id === workspaceId) ?? workspaces.find((w) => w.path === path)
+      if (row) {
+        key ??= keyFromHostId(row.id)
+        name = row.name
+      }
+    } catch (error) {
+      orca.log(`workspace.list: ${errorParts(error).errorDetail}`)
+    }
+  }
+  let orcaProjectId: string | null = null
+  try {
+    clearOrcaCache()
+    const found = describeWorktree(await orcaLister(), { id: workspaceId, key })
+    if (found) {
+      key ??= found.workspaceKey
+      name ??= found.name
+      orcaProjectId = found.orcaProjectId
+    }
+  } catch (error) {
+    orca.log(`workspace.created (CLI): ${errorParts(error).errorDetail}`)
+  }
+  return { key, name: name ?? path.split(/[\\/]/).filter(Boolean).pop() ?? '', orcaProjectId }
+}
+
+/** Whether the task belongs to the Redmine project mapped to that Orca project (or no mapping). */
+async function inMappedProject(orca: OrcaWorkerApi, redmine: RedmineClient, orcaProjectId: string | null, issue: IssueDetail) {
+  const mapped = orcaProjectId ? (await readMap<string>(orca, PROJECT_BY_ORCA_PROJECT))[orcaProjectId] : undefined
+  if (!mapped) return true
+  return projectSubtree(await redmine.listProjects(), mapped).has(issue.projectId)
+}
+
+/**
+ * The `onWorkspaceCreated` setting: a comment naming the workspace, and with `start` a move from
+ * the first open status (New) to the next open one. A refused move keeps the comment.
+ */
+async function recordWorkStarted(orca: OrcaWorkerApi, redmine: RedmineClient, issue: IssueDetail, name: string, branch: string) {
+  const mode = await orca.settings.get(ON_CREATED_SETTING)
+  if (mode !== 'comment' && mode !== 'start') return
+  await redmine.updateIssue(issue.id, { notes: translate(systemLocale(), 'redmine.workStarted', { name, branch }) })
+  if (mode === 'start') {
+    const open = (await redmine.statuses()).filter((s) => !s.isClosed)
+    if (open.length > 1 && issue.statusId === open[0].id) {
+      try {
+        await redmine.updateIssue(issue.id, { statusId: open[1].id })
+      } catch (error) {
+        orca.log(`#${issue.id} start: ${errorParts(error).errorDetail}`)
+      }
+    }
+  }
+  orca.panels.post('redmine.issueChanged', { id: issue.id })
+}
+
 export default function activate(orca: OrcaWorkerApi): void {
+  /** Workspaces whose work start was already recorded in this run (the event may repeat). */
+  const started = new Set<string>()
+
+  // Team branch convention: never refuses a creation, and passes when anything is missing or slow.
+  orca.hooks.on('workspace.create.before', async (event, next) => {
+    if (event.kind !== 'worktree') return
+    const template = await stringSetting(orca, BRANCH_TEMPLATE_SETTING)
+    const id = template ? taskRefFromWorkspace(event.name, event.branch) : null
+    if (!template || !id) return
+    try {
+      const issue = await within(HOOK_BUDGET_MS, client(orca).then((r) => r.getIssue(id)))
+      const branch = branchFromTemplate(template, issue)
+      if (!branch || branch === event.branch) return
+      orca.log(`workspace.create.before #${id}: branch ${branch}`)
+      return next({ ...event, branch })
+    } catch (error) {
+      orca.log(`workspace.create.before #${id}: ${errorParts(error).errorDetail}`)
+    }
+  })
+
+  // Any new worktree that names a task the user can see gets linked to it, whoever created it.
+  orca.events.on('workspace.created', async ({ workspaceId, kind, path, branch }) => {
+    if (kind !== 'worktree') return
+    const { key, name, orcaProjectId } = await describeCreated(orca, workspaceId, path)
+    if (!key) {
+      orca.log(`workspace.created: no link key for ${workspaceId}`)
+      return
+    }
+    const id = taskRefFromWorkspace(name, branch)
+    if (!id) return
+    const linked = (await readMap<AssignedIssue>(orca, ISSUE_BY_WORKSPACE))[key]
+    if (linked && linked.id !== id) return
+    try {
+      const redmine = await client(orca)
+      const issue = await redmine.getIssue(id)
+      if (!(await inMappedProject(orca, redmine, orcaProjectId, issue))) return
+      if (!linked) {
+        // Read again right before writing: the panel may have linked meanwhile.
+        const links = await readMap<AssignedIssue>(orca, ISSUE_BY_WORKSPACE)
+        if (!links[key]) await orca.storage.set(ISSUE_BY_WORKSPACE, { ...links, [key]: { id: issue.id, subject: issue.subject } })
+        orca.log(`workspace.created: linked ${key} to #${issue.id}`)
+      }
+      if (started.has(key)) return
+      started.add(key)
+      await recordWorkStarted(orca, redmine, issue, name, shortBranch(branch))
+    } catch (error) {
+      orca.log(`workspace.created #${id}: ${errorParts(error).errorDetail}`)
+    }
+  })
+
   orca.panels.handle('redmine.status', () => status(orca))
 
   orca.panels.handle('redmine.configure', async ({ url, apiKey }) => {

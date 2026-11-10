@@ -15,7 +15,11 @@ export const es: Messages = {
 
   'header.title': 'Redmine',
   'header.reload': 'Recargar',
-  'header.disconnect': 'Desconectar',
+  'header.connection': 'Conexión con Redmine',
+  'disconnect.title': '¿Desconectar de Redmine?',
+  'disconnect.body': 'Conectado a {url} como {user}. Al desconectar se borra la API key de este ordenador; tendrás que pegarla de nuevo para reconectar.',
+  'disconnect.confirm': 'Desconectar',
+  'disconnect.cancel': 'Seguir conectado',
 
   'section.tasks': 'Tareas',
   'section.agent': 'Agente',

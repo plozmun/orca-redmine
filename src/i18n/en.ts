@@ -16,7 +16,11 @@ export const en = {
   // Header
   'header.title': 'Redmine',
   'header.reload': 'Reload',
-  'header.disconnect': 'Disconnect',
+  'header.connection': 'Redmine connection',
+  'disconnect.title': 'Disconnect from Redmine?',
+  'disconnect.body': 'Connected to {url} as {user}. Disconnecting deletes the API key from this computer; you will need to paste it again to reconnect.',
+  'disconnect.confirm': 'Disconnect',
+  'disconnect.cancel': 'Stay connected',
 
   // Section headers
   'section.tasks': 'Tasks',

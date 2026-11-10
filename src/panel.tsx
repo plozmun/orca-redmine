@@ -86,6 +86,8 @@ const projects = atom<Project[]>([])
 const detail = atom<IssueDetail | null>(null)
 const workspace = atom<WorkspaceInfo | null>(null)
 const busy = atom(false)
+/** The disconnect confirmation is open (the header button only asks; this callout disconnects). */
+const confirmingDisconnect = atom(false)
 /** The detail's tab; a newly opened task starts on its description. */
 type DetailTab = 'description' | 'activity' | 'time'
 const detailTab = atom<DetailTab>('description')
@@ -322,6 +324,7 @@ const connect = () =>
 
 const disconnect = () =>
   run(async () => {
+    set(confirmingDisconnect, false)
     closeIssue()
     set(issues, [])
     set(connection, await plugin.request('redmine.disconnect'))
@@ -1124,6 +1127,26 @@ function IssueView({ issue }: { issue: IssueDetail }) {
   )
 }
 
+/** Disconnecting deletes the API key, so it takes a second, explicit press. */
+function DisconnectConfirm({ status }: { status: ConnectionStatus }) {
+  const user = status.user ? status.user.name || status.user.login : '?'
+  return (
+    <Callout tone="warning" icon="warning" title={t('disconnect.title')}>
+      <Stack gap="sm">
+        <Text size="sm">{t('disconnect.body', { url: status.url ?? '', user })}</Text>
+        <Row gap="sm">
+          <Button key="disconnect-confirm" size="sm" variant="solid" tone="danger" icon="close" disabled={read(busy)} onPress={disconnect}>
+            {t('disconnect.confirm')}
+          </Button>
+          <Button key="disconnect-cancel" size="sm" variant="ghost" onPress={() => set(confirmingDisconnect, false)}>
+            {t('disconnect.cancel')}
+          </Button>
+        </Row>
+      </Stack>
+    </Callout>
+  )
+}
+
 export default function Panel() {
   const status = read(connection)
   const current = read(detail)
@@ -1151,10 +1174,18 @@ export default function Panel() {
               label={t('header.reload')}
               onPress={() => (current ? openIssue(current.id) : loadIssues())}
             />
-            <IconButton icon="close" size="sm" label={t('header.disconnect')} variant="ghost" onPress={disconnect} />
+            <IconButton
+              key="connection"
+              icon="plug"
+              size="sm"
+              label={t('header.connection')}
+              variant="ghost"
+              onPress={() => update(confirmingDisconnect, (open) => !open)}
+            />
           </Row>
         </Row>
       ) : null}
+      {status?.configured && read(confirmingDisconnect) ? <DisconnectConfirm status={status} /> : null}
       {err ? (
         <Callout tone="danger" icon="error">
           <Text>{err}</Text>

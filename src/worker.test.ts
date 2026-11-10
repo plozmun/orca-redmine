@@ -210,3 +210,85 @@ test('send to agent uses the sendPrompt setting template', async () => {
   main.setContextDir(undefined)
   await worker.deactivate()
 })
+
+test('the API key never reaches logs, errors, prompts, terminals or context files', async () => {
+  const KEY = 'secret-key-3f9a1c'
+  const { mkdtemp, readFile, readdir } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = await mkdtemp(join(tmpdir(), 'redmine-key-test-'))
+  main.setContextDir(dir)
+  main.setRedmineCliDetector(async () => 'redmine 1.0')
+  main.setOrcaLister(async () => {
+    throw Object.assign(new Error('spawn orca ENOENT'), { code: 'orca_cli' })
+  })
+  const prompts: string[] = []
+  main.setOrcaCreator(async (options) => {
+    prompts.push(options.prompt, options.comment ?? '')
+    throw Object.assign(new Error('orca worktree create failed'), { code: 'orca_cli' })
+  })
+
+  // Every Redmine answer the client maps to an error, plus a network failure and success.
+  let mode: number | 'throw' | 'ok' = 'ok'
+  globalThis.fetch = (async (url: string) => {
+    if (mode === 'throw') throw new Error(`connect ECONNREFUSED ${url}`)
+    if (mode === 'ok') {
+      const body = url.includes('/issues/77.json')
+        ? { issue: { ...issue, description: 'Pay', journals: [{ id: 1, user: { name: 'Ana' }, notes: 'Hi', created_on: '2026-10-01' }] } }
+        : url.includes('/issues.json')
+          ? { issues: [issue], total_count: 1 }
+          : { user: { id: 1, login: 'pablo', firstname: 'P', lastname: 'L' } }
+      return { ok: true, status: 200, text: async () => JSON.stringify(body) }
+    }
+    return { ok: false, status: mode, text: async () => JSON.stringify({ errors: ['Status is invalid'] }) }
+  }) as unknown as typeof fetch
+
+  const host = mockHost({
+    settings: { url: 'https://redmine.test', limit: 50 },
+    secrets: { apiKey: KEY },
+    results: { 'terminal.sendText': { accepted: true } }
+  })
+  const worker = await mountWorker(main, { host })
+  const seen: unknown[] = []
+  const call = async (run: () => Promise<unknown>) => {
+    try {
+      seen.push(await run())
+    } catch (error) {
+      seen.push({ message: (error as Error).message, code: (error as { code?: string }).code })
+    }
+  }
+  const requests = async () => {
+    await call(() => worker.request('redmine.status'))
+    await call(() => worker.request('redmine.issues', { mine: true }))
+    await call(() => worker.request('redmine.issue', { id: 77 }))
+    await call(() => worker.request('redmine.setStatus', { id: 77, statusId: 2 }))
+    await call(() => worker.request('redmine.comment', { id: 77, notes: 'x' }))
+    await call(() => worker.request('redmine.logTime', { id: 77, hours: 1, comments: '' }))
+    await call(() => worker.command('redmine.myIssues'))
+  }
+  for (const m of [401, 403, 404, 422, 500, 'throw', 'ok'] as const) {
+    mode = m
+    await requests()
+  }
+  await call(() => worker.request('redmine.configure', { url: 'not a url', apiKey: KEY }))
+  await call(() => worker.request('redmine.locateWorkspace', { displayName: 'pay', branch: 'main' }))
+  await call(() =>
+    worker.request('redmine.launchWorkspace', { issueId: 77, orcaProjectId: 'p', agent: 'claude', instructions: 'Go', activate: false, locale: 'en' })
+  )
+  await call(() => worker.request('redmine.sendToAgent', { id: 77, terminalId: 't1', locale: 'en' }))
+
+  const files = await Promise.all((await readdir(dir)).map((f) => readFile(join(dir, f), 'utf8')))
+  assert.ok(files.length > 0 && prompts.length > 0 && worker.logs.length > 0, 'the paths under test ran')
+  const everything = JSON.stringify({
+    logs: worker.logs,
+    seen,
+    posts: worker.posts,
+    prompts,
+    files,
+    sent: host.callsOf('terminal.sendText'),
+    settings: host.data().settings
+  })
+  assert.ok(!everything.includes(KEY), 'the API key leaked')
+  main.setContextDir(undefined)
+  await worker.deactivate()
+})

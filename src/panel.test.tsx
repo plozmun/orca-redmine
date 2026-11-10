@@ -424,3 +424,38 @@ test('the Time tab lists my entries with their total and logs new time', async (
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
+
+test('disconnecting asks first and only the confirm button deletes the connection', async () => {
+  let disconnects = 0
+  const view = await mount(panel, {
+    host: connectedHost([], {
+      'redmine.disconnect': () => {
+        disconnects++
+        return { configured: false, url: 'https://redmine.test', user: null }
+      }
+    }),
+    locale: 'en'
+  })
+  assert.ok(!drawn(view, 'Disconnect from Redmine?'))
+
+  // The header button only opens the confirmation.
+  await view.press({ label: 'Redmine connection' })
+  assert.equal(disconnects, 0)
+  assert.ok(drawn(view, 'Disconnect from Redmine?'))
+  assert.ok(drawn(view, 'https://redmine.test as Pablo'))
+
+  // Cancel closes it without disconnecting; pressing the header again toggles it.
+  await view.press({ testId: 'disconnect-cancel' })
+  assert.ok(!drawn(view, 'Disconnect from Redmine?'))
+  await view.press({ label: 'Redmine connection' })
+  await view.press({ label: 'Redmine connection' })
+  assert.ok(!drawn(view, 'Disconnect from Redmine?'))
+  assert.equal(disconnects, 0)
+
+  await view.press({ label: 'Redmine connection' })
+  await view.press({ testId: 'disconnect-confirm' })
+  assert.equal(disconnects, 1)
+  assert.ok(view.find({ text: 'Connect to Redmine' }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})

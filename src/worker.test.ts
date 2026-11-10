@@ -292,3 +292,60 @@ test('the API key never reaches logs, errors, prompts, terminals or context file
   main.setContextDir(undefined)
   await worker.deactivate()
 })
+
+test('locate takes the key from the host and only the Orca project from the CLI', async () => {
+  const hostListing = {
+    workspaces: [
+      { id: 'identity:wt-1', kind: 'worktree', name: 'pay', path: '/p', branch: 'feature/1-pay', hostId: 'local' },
+      { id: 'identity:wt-2', kind: 'worktree', name: 'fresh', path: '/f', branch: 'feature/2-fresh', hostId: 'local' }
+    ],
+    truncated: false
+  }
+  const cliListing = {
+    projects: [{ id: 'git:x/shop', displayName: 'shop' }],
+    worktrees: [{ id: 'r::/p', identity: { key: 'wt-1' }, projectId: 'git:x/shop', displayName: 'pay', branch: 'refs/heads/feature/1-pay' }]
+  }
+  let cli: () => Promise<OrcaListingLike> = async () => cliListing
+  main.setOrcaLister(() => cli())
+  const host = mockHost({ capabilities: ['workspace:read'], results: { 'workspace.list': hostListing } })
+  const worker = await mountWorker(main, { host })
+  const locate = (displayName: string, branch: string) => worker.request('redmine.locateWorkspace', { displayName, branch })
+
+  assert.deepEqual(await locate('pay', 'feature/1-pay'), {
+    located: { workspaceKey: 'wt-1', orcaProjectId: 'git:x/shop', orcaProjectName: 'shop' }
+  })
+  // Known to the host, not (yet) to the CLI: the key still links the task.
+  assert.deepEqual(await locate('fresh', 'feature/2-fresh'), {
+    located: { workspaceKey: 'wt-2', orcaProjectId: null, orcaProjectName: null },
+    errorCode: 'workspace_not_listed',
+    errorDetail: 'fresh'
+  })
+  // CLI missing: same key, project unknown with the reason.
+  cli = async () => {
+    throw Object.assign(new Error('spawn orca ENOENT'), { code: 'orca_cli' })
+  }
+  assert.deepEqual(await locate('pay', 'feature/1-pay'), {
+    located: { workspaceKey: 'wt-1', orcaProjectId: null, orcaProjectName: null },
+    errorCode: 'orca_cli',
+    errorDetail: 'spawn orca ENOENT'
+  })
+  // Not in the host listing: the CLI decides, as before.
+  cli = async () => cliListing
+  assert.deepEqual(await locate('other', 'main'), { located: null, errorCode: 'workspace_not_listed', errorDetail: 'other' })
+  await worker.deactivate()
+})
+
+test('locate falls back to the CLI when the host refuses workspace.list', async () => {
+  main.setOrcaLister(async () => ({
+    projects: [],
+    worktrees: [{ id: 'r::/p', identity: { key: 'wt-1' }, projectId: null, displayName: 'pay', branch: 'main' }]
+  }))
+  const worker = await mountWorker(main, { host: mockHost({ capabilities: [] }) })
+  assert.deepEqual(await worker.request('redmine.locateWorkspace', { displayName: 'pay', branch: 'main' }), {
+    located: { workspaceKey: 'wt-1', orcaProjectId: null, orcaProjectName: null }
+  })
+  assert.ok(worker.logs.some((l) => l.startsWith('workspace.list:')))
+  await worker.deactivate()
+})
+
+type OrcaListingLike = Awaited<ReturnType<Parameters<typeof main.setOrcaLister>[0]>>

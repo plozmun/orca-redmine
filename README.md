@@ -39,7 +39,7 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 orca-plugin.json        Manifest: panel, command, settings and capabilities
 assets/                 Plugin icon and cover for the plugin page
 src/redmine.ts          Redmine REST API client (no Orca dependency)
-src/orca-workspaces.ts  Locates the focused workspace and creates worktrees through the `orca` CLI
+src/orca-workspaces.ts  Locates the focused workspace (host listing, then `orca` CLI) and creates worktrees
 src/launch.ts           Workspace name and agent prompt for a task
 src/agent-files.ts      Context file for "Send to agent" and the `redmine` CLI check
 src/textile.ts          Textile → Markdown for descriptions and comments
@@ -93,7 +93,7 @@ The plugin talks to the Redmine REST API itself and does not need [redmine-cli](
 
 ## How the plugin knows a workspace's project
 
-The plugin API only exposes the focused workspace's name, branch and terminals. The worker runs `orca worktree list` and `orca project list` (cached for 15 s) and matches the worktree by name and branch to get its Orca `projectId` and stable id. If the CLI is not on the worker's PATH, set `ORCA_CLI`.
+The plugin API gives the focused workspace's name, branch and terminals. The worker matches the worktree by name and branch in Orca's `workspace.list` to get its stable id, which is what tasks are linked to. Orca's plugin API does not say which Orca project a workspace belongs to, so for that the worker runs `orca worktree list` and `orca project list` (cached for 15 s). If the CLI is not on the worker's PATH, set `ORCA_CLI`. Without the CLI, linked tasks and the branch suggestion still work; only the Redmine project filter and creating workspaces need it. On Orca versions without `workspace.list`, the CLI is used for the stable id too.
 
 Mappings (Orca project → Redmine project, workspace → task) live in the plugin's storage. Orca rejects Redmine URLs in `orca reference`, so they do not appear as native workspace links.
 

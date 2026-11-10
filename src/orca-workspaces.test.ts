@@ -1,5 +1,14 @@
 import { assert, test } from 'orca/testing'
-import { createWorktreeArgs, matchWorktree, parseCreated, type OrcaListing } from './orca-workspaces'
+import {
+  createWorktreeArgs,
+  keyFromHostId,
+  matchHostWorkspace,
+  matchWorktree,
+  parseCreated,
+  projectForKey,
+  type HostWorkspaceRow,
+  type OrcaListing
+} from './orca-workspaces'
 
 const listing: OrcaListing = {
   projects: [{ id: 'git:gitlab.example.com/backend/kyb', displayName: 'kyb' }],
@@ -50,4 +59,39 @@ test('reads the created worktree and what was launched', () => {
     { workspaceKey: 'wt2:local:new', displayName: '1-pay', branch: 'pablo/1-pay', path: '/p', launch: 'terminal' }
   )
   assert.deepEqual(parseCreated({}), { workspaceKey: null, displayName: null, branch: null, path: null, launch: null })
+})
+
+// `workspace.list` rows as Orca 1.4.255 gives them: id = "identity:" + the CLI's identity.key.
+const hostRows: HostWorkspaceRow[] = [
+  { id: 'identity:wt2:local:aaa', kind: 'worktree', name: 'kyb', branch: 'develop' },
+  { id: 'identity:wt2:local:bbb', kind: 'worktree', name: 'login', branch: 'feature/123-login' },
+  { id: 'identity:wt2:local:ccc', kind: 'worktree', name: 'login', branch: 'feature/9-login' },
+  { id: 'identity:folder:docs', kind: 'folder', name: 'docs', branch: null }
+]
+
+test('host ids map to the stored link key; other shapes are not trusted', () => {
+  assert.equal(keyFromHostId('identity:wt2:local:aaa'), 'wt2:local:aaa')
+  assert.equal(keyFromHostId('identity:wt2:ssh-1:aaa'), 'wt2:ssh-1:aaa')
+  assert.equal(keyFromHostId('identity:'), null)
+  assert.equal(keyFromHostId('r1::/p/kyb'), null)
+})
+
+test('the host listing uses the same matching rule as the CLI and ignores folders', () => {
+  const key = (displayName: string, branch: string) => matchHostWorkspace(hostRows, { displayName, branch })
+  assert.equal(key('kyb', 'develop'), 'wt2:local:aaa')
+  assert.equal(key('login', 'refs/heads/feature/9-login'), 'wt2:local:ccc')
+  assert.equal(key('login', 'other'), null)
+  assert.equal(key('renamed', 'feature/123-login'), 'wt2:local:bbb')
+  assert.equal(key('docs', 'main'), null)
+  assert.equal(matchHostWorkspace([{ id: 'r1::/p', kind: 'worktree', name: 'x', branch: 'main' }], { displayName: 'x', branch: 'main' }), null)
+  // Same answer as the CLI for every worktree both list.
+  for (const w of listing.worktrees) {
+    const context = { displayName: w.displayName ?? '', branch: w.branch ?? '' }
+    assert.equal(matchHostWorkspace(hostRows, context), matchWorktree(listing, context)?.workspaceKey)
+  }
+})
+
+test('the Orca project of a key comes from the CLI listing', () => {
+  assert.deepEqual(projectForKey(listing, 'wt2:local:ccc'), { orcaProjectId: 'git:gitlab.example.com/web/site', orcaProjectName: 'site' })
+  assert.equal(projectForKey(listing, 'wt2:local:zzz'), null)
 })

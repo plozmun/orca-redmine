@@ -459,3 +459,21 @@ test('disconnecting asks first and only the confirm button deletes the connectio
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
+
+test('a workspace found without its Orca project still links tasks and says why the project is unknown', async () => {
+  const host = connectedHost([], {
+    'redmine.locateWorkspace': () => ({
+      located: { workspaceKey: 'wt-pay', orcaProjectId: null, orcaProjectName: null },
+      errorCode: 'orca_cli',
+      errorDetail: 'spawn orca ENOENT'
+    })
+  })
+  const view = await mount(panel, { host, locale: 'en' })
+  await view.emit('workspace.changed', ws('feature/4077-pay'))
+  assert.ok(drawn(view, 'Could not identify the Orca project: Could not run the Orca CLI (spawn orca ENOENT)'))
+  assert.ok(!drawn(view, 'Redmine project for'))
+  await view.press({ text: 'Assign #4077 (from branch)' })
+  assert.deepEqual(view.persisted.plugin['redmine.issueByWorkspace'], { 'wt-pay': { id: 4077, subject: 'Checkout screen' } })
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})

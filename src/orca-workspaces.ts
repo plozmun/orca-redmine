@@ -1,6 +1,7 @@
-// Talks to the `orca` CLI from the worker. The plugin API only gives the focused workspace's name,
-// branch and terminals, so to learn which Orca project (repository) it belongs to, get a stable id,
-// and create new worktrees, the worker runs `orca worktree list|create` and `orca project list`.
+// Finds Orca workspaces for the worker. The stable workspace key comes from the host's
+// `workspace.list` when it can answer; the Orca CLI (`orca worktree list|create`, `orca project
+// list`) is still needed for the Orca project (repository) a workspace belongs to, as a fallback
+// for the key, and to create new worktrees.
 import { RedmineError } from './redmine'
 
 export interface WorktreeRow {
@@ -36,24 +37,71 @@ function fallbackProjectName(projectId: string): string {
   return projectId.split('/').filter(Boolean).pop() ?? projectId
 }
 
-/** The worktree with that name (and branch, when several share it); else the only one on that branch. */
-export function matchWorktree(
-  listing: OrcaListing,
-  context: { displayName: string; branch: string }
-): LocatedWorkspace | null {
+export interface FocusedContext {
+  displayName: string
+  branch: string
+}
+
+/**
+ * The one matching rule for every listing: the row with that name (and branch, when several share
+ * it); else the only one on that branch.
+ */
+function pickRow<T>(rows: readonly T[], nameOf: (row: T) => string | undefined, branchOf: (row: T) => string | null | undefined, context: FocusedContext): T | null {
   const branch = shortBranch(context.branch)
-  const byName = listing.worktrees.filter((w) => w.displayName === context.displayName)
-  const candidates = byName.length > 0 ? byName : branch ? listing.worktrees.filter((w) => shortBranch(w.branch) === branch) : []
-  const pick =
-    candidates.length === 1 ? candidates[0] : (candidates.find((w) => branch && shortBranch(w.branch) === branch) ?? null)
-  if (!pick) return null
-  const projectId = pick.projectId ?? null
+  const byName = rows.filter((r) => nameOf(r) === context.displayName)
+  const candidates = byName.length > 0 ? byName : branch ? rows.filter((r) => shortBranch(branchOf(r)) === branch) : []
+  return candidates.length === 1 ? candidates[0] : (candidates.find((r) => branch && shortBranch(branchOf(r)) === branch) ?? null)
+}
+
+/** The key links are stored under, as the CLI gives it. */
+function cliKey(row: WorktreeRow): string {
+  return row.identity?.key || row.id
+}
+
+function projectOf(listing: OrcaListing, row: WorktreeRow): Pick<LocatedWorkspace, 'orcaProjectId' | 'orcaProjectName'> {
+  const projectId = row.projectId ?? null
   const project = projectId ? listing.projects.find((p) => p.id === projectId) : undefined
   return {
-    workspaceKey: pick.identity?.key || pick.id,
     orcaProjectId: projectId,
     orcaProjectName: projectId ? (project?.displayName ?? fallbackProjectName(projectId)) : null
   }
+}
+
+/** Locates the focused workspace in the CLI listing (key and Orca project). */
+export function matchWorktree(listing: OrcaListing, context: FocusedContext): LocatedWorkspace | null {
+  const pick = pickRow(listing.worktrees, (w) => w.displayName, (w) => w.branch, context)
+  return pick ? { workspaceKey: cliKey(pick), ...projectOf(listing, pick) } : null
+}
+
+/** The Orca project of the worktree stored under `key`, or null when the CLI does not list it. */
+export function projectForKey(listing: OrcaListing, key: string): Pick<LocatedWorkspace, 'orcaProjectId' | 'orcaProjectName'> | null {
+  const row = listing.worktrees.find((w) => cliKey(w) === key)
+  return row ? projectOf(listing, row) : null
+}
+
+/** A row of the host's `workspace.list`. */
+export interface HostWorkspaceRow {
+  id: string
+  kind: 'worktree' | 'folder'
+  name: string
+  branch: string | null
+}
+
+const HOST_ID_PREFIX = 'identity:'
+
+/**
+ * The link key for a `workspace.list` id: the host id is `identity:` + the CLI's `identity.key`
+ * (checked on Orca 1.4.255). Any other shape is not trusted, so the caller falls back to the CLI.
+ */
+export function keyFromHostId(id: string): string | null {
+  return id.startsWith(HOST_ID_PREFIX) && id.length > HOST_ID_PREFIX.length ? id.slice(HOST_ID_PREFIX.length) : null
+}
+
+/** The link key of the focused worktree in the host's listing, or null. Folders are never linked. */
+export function matchHostWorkspace(rows: readonly HostWorkspaceRow[], context: FocusedContext): string | null {
+  const worktrees = rows.filter((r) => r.kind === 'worktree')
+  const pick = pickRow(worktrees, (r) => r.name, (r) => r.branch, context)
+  return pick ? keyFromHostId(pick.id) : null
 }
 
 const CLI_CANDIDATES = [process.env.ORCA_CLI, 'orca', '/usr/local/bin/orca', '/opt/homebrew/bin/orca'].filter(

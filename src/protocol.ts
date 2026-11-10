@@ -30,7 +30,11 @@ declare module 'orca' {
     'redmine.issue': { input: { id: number }; output: IssueDetail }
     'redmine.statuses': { output: IssueStatus[] }
     'redmine.projects': { output: Project[] }
-    /** Which Orca project the focused workspace comes from, and its stable id. */
+    /**
+     * Which Orca project the focused workspace comes from, and its stable id. The id comes from the
+     * host when it can answer, so `located` may be set with a null project and an `errorCode` saying
+     * why the project is unknown (the CLI failed or does not list it).
+     */
     'redmine.locateWorkspace': {
       input: { displayName: string; branch: string }
       output: { located: LocatedWorkspace | null; errorCode?: string; errorDetail?: string }

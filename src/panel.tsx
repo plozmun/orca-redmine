@@ -698,7 +698,7 @@ function WorkspaceBar() {
       {loc?.orcaProjectId && read(projects).length > 0 ? (
         <ProjectPicker label={t('workspace.redmineProjectFor', { name: loc.orcaProjectName ?? '' })} />
       ) : null}
-      {!loc && read(projects).length > 0 ? (
+      {!loc?.orcaProjectId && read(projects).length > 0 ? (
         <Text muted size="xs">
           {reason ? t('workspace.orcaProjectUnknownReason', { reason }) : t('workspace.orcaProjectUnknown')}
         </Text>

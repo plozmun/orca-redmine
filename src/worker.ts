@@ -9,9 +9,14 @@ import {
   clearOrcaCache,
   createWorktree,
   listOrca,
+  matchHostWorkspace,
   matchWorktree,
+  projectForKey,
   type CreatedWorktree,
   type CreateWorktreeOptions,
+  type FocusedContext,
+  type HostWorkspaceRow,
+  type LocatedWorkspace,
   type OrcaListing
 } from './orca-workspaces'
 import type { ConnectionStatus } from './protocol'
@@ -96,6 +101,38 @@ async function status(orca: OrcaWorkerApi): Promise<ConnectionStatus> {
   }
 }
 
+/**
+ * The focused workspace's link key from the host's `workspace.list`, without the CLI. Null when the
+ * host cannot say (older Orca, a refusal, or a truncated listing without it): the CLI decides then.
+ */
+async function hostWorkspaceKey(orca: OrcaWorkerApi, context: FocusedContext): Promise<string | null> {
+  if (!orca.host.has('workspace.list')) return null
+  try {
+    const { workspaces } = (await orca.host.call('workspace.list', {})) as { workspaces: HostWorkspaceRow[]; truncated: boolean }
+    return matchHostWorkspace(workspaces, context)
+  } catch (error) {
+    orca.log(`workspace.list: ${errorParts(error).errorDetail}`)
+    return null
+  }
+}
+
+/** The CLI-only lookup: key and Orca project from `orca worktree list`, asking again on a miss. */
+async function locateWithCli(context: FocusedContext): Promise<LocatedWorkspace | null> {
+  const located = matchWorktree(await orcaLister(), context)
+  if (located) return located
+  // It may be a brand-new workspace: ask again without the cache.
+  clearOrcaCache()
+  return matchWorktree(await orcaLister(), context)
+}
+
+/** The Orca project of a workspace already identified by the host, asking again on a miss. */
+async function projectWithCli(key: string) {
+  const project = projectForKey(await orcaLister(), key)
+  if (project) return project
+  clearOrcaCache()
+  return projectForKey(await orcaLister(), key)
+}
+
 export default function activate(orca: OrcaWorkerApi): void {
   orca.panels.handle('redmine.status', () => status(orca))
 
@@ -127,13 +164,21 @@ export default function activate(orca: OrcaWorkerApi): void {
   orca.panels.handle('redmine.projects', async () => (await client(orca)).listProjects())
 
   orca.panels.handle('redmine.locateWorkspace', async (context) => {
-    try {
-      let located = matchWorktree(await orcaLister(), context)
-      if (!located) {
-        // It may be a brand-new workspace: ask again without the cache.
-        clearOrcaCache()
-        located = matchWorktree(await orcaLister(), context)
+    const key = await hostWorkspaceKey(orca, context)
+    if (key) {
+      // The workspace is known; only its Orca project needs the CLI, and failing that is not fatal.
+      try {
+        const project = await projectWithCli(key)
+        if (project) return { located: { workspaceKey: key, ...project } }
+        return { located: { workspaceKey: key, orcaProjectId: null, orcaProjectName: null }, errorCode: 'workspace_not_listed', errorDetail: context.displayName }
+      } catch (error) {
+        const parts = errorParts(error)
+        orca.log(`locateWorkspace (project): ${parts.errorDetail}`)
+        return { located: { workspaceKey: key, orcaProjectId: null, orcaProjectName: null }, ...parts }
       }
+    }
+    try {
+      const located = await locateWithCli(context)
       return located ? { located } : { located: null, errorCode: 'workspace_not_listed', errorDetail: context.displayName }
     } catch (error) {
       const parts = errorParts(error)

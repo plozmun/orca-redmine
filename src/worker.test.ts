@@ -530,3 +530,166 @@ test('without a stable key for the created workspace nothing is linked', async (
   assert.ok(worker.logs.some((l) => l.startsWith('workspace.created: no link key')))
   await worker.deactivate()
 })
+
+// --- Agents started in a linked workspace: REDMINE_ISSUE and the optional prompt pointer ---
+
+const LINKED_4077 = { 'wt-4077-checkout': { id: 4077, subject: 'Checkout with saved cards' } }
+const hostRow4077 = {
+  id: 'identity:wt-4077-checkout',
+  kind: 'worktree' as const,
+  name: '4077-checkout',
+  path: '/repos/shop/4077-checkout',
+  branch: 'pablo/4077-checkout',
+  hostId: 'local'
+}
+
+/** A worker whose Redmine is unreachable: any network call would fail the test. */
+async function agentWorker(
+  options: {
+    settings?: Record<string, unknown>
+    storage?: Record<string, unknown>
+    workspaces?: unknown[]
+    capabilities?: string[]
+  } = {}
+) {
+  const fetchCalls: string[] = []
+  globalThis.fetch = (async (url: string) => {
+    fetchCalls.push(url)
+    throw new Error(`unexpected network call: ${url}`)
+  }) as unknown as typeof fetch
+  const host = mockHost({
+    ...configured,
+    settings: { ...configured.settings, ...options.settings },
+    storage: (options.storage ?? { 'links.issueByWorkspace': LINKED_4077 }) as never,
+    ...(options.capabilities ? { capabilities: options.capabilities } : {}),
+    results: { 'workspace.list': { workspaces: options.workspaces ?? [hostRow4077], truncated: false } }
+  })
+  const worker = await mountWorker(main, { host })
+  return { worker, host, fetchCalls }
+}
+
+const agentLaunch = (extra: { workspaceId?: string | null; terminalId?: string; env?: Record<string, string> } = {}) => ({
+  agent: 'claude',
+  workspaceId: extra.workspaceId === undefined ? 'identity:wt-4077-checkout' : extra.workspaceId,
+  workspaceKind: 'worktree' as const,
+  ...(extra.terminalId ? { terminalId: extra.terminalId } : {}),
+  command: 'claude',
+  env: extra.env ?? {}
+})
+
+const promptEvent = (extra: { terminalId?: string; prompt?: string; inputKind?: 'launch' | 'orchestration' | 'driving' }) => ({
+  agent: 'claude',
+  terminalId: extra.terminalId ?? 't1',
+  prompt: extra.prompt ?? 'Fix the failing tests',
+  inputKind: extra.inputKind ?? ('launch' as const)
+})
+
+test('agent.launch.before exports REDMINE_ISSUE, and nothing else, without calling Redmine', async () => {
+  const { worker, fetchCalls } = await agentWorker()
+  const decision = (await worker.hooks.fire('agent.launch.before', agentLaunch())) as {
+    event?: { command: string; env: Record<string, string> }
+  }
+  assert.deepEqual(decision.event?.env, { REDMINE_ISSUE: '4077' })
+  assert.equal(decision.event?.command, 'claude')
+  // No key, no URL, no file: only the number travels.
+  const values = Object.values(decision.event!.env)
+  assert.deepEqual(Object.keys(decision.event!.env), ['REDMINE_ISSUE'])
+  assert.ok(!values.some((v) => v === configured.secrets.apiKey || v.includes('redmine.test')))
+  assert.deepEqual(fetchCalls, [])
+  await worker.deactivate()
+})
+
+test('agent.launch.before keeps the environment the launcher chose', async () => {
+  const { worker } = await agentWorker()
+  const kept = (await worker.hooks.fire('agent.launch.before', agentLaunch({ env: { CI: '1' } }))) as {
+    event: { env: Record<string, string> }
+  }
+  assert.deepEqual(kept.event.env, { CI: '1', REDMINE_ISSUE: '4077' })
+  const own = (await worker.hooks.fire('agent.launch.before', agentLaunch({ env: { REDMINE_ISSUE: '9' } }))) as {
+    event: { env: Record<string, string> }
+  }
+  assert.deepEqual(own.event.env, { REDMINE_ISSUE: '9' })
+  await worker.deactivate()
+})
+
+test('agent.launch.before passes when there is no workspace, no link, or no host listing entry', async () => {
+  let w = await agentWorker()
+  for (const event of [
+    agentLaunch({ workspaceId: null }),
+    agentLaunch({ workspaceId: 'identity:wt-other' }),
+    agentLaunch({ workspaceId: 'identity:wt-other' })
+  ]) {
+    // A pass leaves the event exactly as it came.
+    const decision = (await w.worker.hooks.fire('agent.launch.before', event)) as { event: unknown }
+    assert.deepEqual(decision.event, event)
+  }
+  await w.worker.deactivate()
+
+  w = await agentWorker({ storage: {} })
+  const unlinked = agentLaunch()
+  assert.deepEqual(((await w.worker.hooks.fire('agent.launch.before', unlinked)) as { event: unknown }).event, unlinked)
+  await w.worker.deactivate()
+
+  w = await agentWorker({ workspaces: [] })
+  const cliId = agentLaunch({ workspaceId: 'r::/repos/shop/4077-checkout' })
+  assert.deepEqual(((await w.worker.hooks.fire('agent.launch.before', cliId)) as { event: unknown }).event, cliId)
+  await w.worker.deactivate()
+})
+
+test('agent.launch.before resolves the CLI workspace id through workspace.list, by id or path', async () => {
+  const { worker, host } = await agentWorker()
+  const byPath = (await worker.hooks.fire('agent.launch.before', agentLaunch({ workspaceId: 'r::/repos/shop/4077-checkout' }))) as {
+    event?: { env: Record<string, string> }
+  }
+  assert.equal(byPath.event?.env.REDMINE_ISSUE, '4077')
+  assert.equal(host.callsOf('workspace.list').length, 1)
+  const byId = (await worker.hooks.fire('agent.launch.before', agentLaunch({ workspaceId: 'identity:wt-4077-checkout' }))) as {
+    event?: { env: Record<string, string> }
+  }
+  assert.equal(byId.event?.env.REDMINE_ISSUE, '4077')
+  // The identity form needs no listing at all.
+  assert.equal(host.callsOf('workspace.list').length, 1)
+  await worker.deactivate()
+})
+
+test('the prompt pointer names the task only where asked for', async () => {
+  const workspaces = [hostRow4077]
+  // Setting on, terminal seen by the launch hook: one line naming the task.
+  let w = await agentWorker({ settings: { promptPointer: true }, workspaces })
+  await w.worker.hooks.fire('agent.launch.before', agentLaunch({ workspaceId: 'r::/repos/shop/4077-checkout', terminalId: 't1' }))
+  const pointed = (await w.worker.hooks.fire('agent.prompt.before', promptEvent({}))) as { event?: { prompt: string } }
+  assert.equal(
+    pointed.event?.prompt,
+    'Fix the failing tests\n\nRedmine task #4077 "Checkout with saved cards": https://redmine.test/issues/4077'
+  )
+  // The plugin's own prompt already names the task (by number, or by URL): unchanged.
+  for (const prompt of [
+    'Work on Redmine task #4077 "Checkout with saved cards": https://redmine.test/issues/4077',
+    'Take a look at https://redmine.test/issues/4077'
+  ]) {
+    const event = promptEvent({ prompt })
+    const decision = (await w.worker.hooks.fire('agent.prompt.before', event)) as { event: unknown }
+    assert.deepEqual(decision.event, event)
+  }
+  // Orchestration prompts and terminals the launch hook did not see: unchanged.
+  for (const event of [promptEvent({ inputKind: 'orchestration' }), promptEvent({ terminalId: 't2' })]) {
+    const decision = (await w.worker.hooks.fire('agent.prompt.before', event)) as { event: unknown }
+    assert.deepEqual(decision.event, event)
+  }
+  await w.worker.deactivate()
+
+  // Off by default: nothing is appended.
+  w = await agentWorker({ workspaces })
+  await w.worker.hooks.fire('agent.launch.before', agentLaunch({ terminalId: 't1' }))
+  const off = promptEvent({})
+  assert.deepEqual(((await w.worker.hooks.fire('agent.prompt.before', off)) as { event: unknown }).event, off)
+  await w.worker.deactivate()
+})
+
+test('the prompt pointer omits the URL when Orca has no Redmine URL yet', async () => {
+  const { worker } = await agentWorker({ settings: { promptPointer: true, url: '' } })
+  await worker.hooks.fire('agent.launch.before', agentLaunch({ terminalId: 't1' }))
+  const decision = (await worker.hooks.fire('agent.prompt.before', promptEvent({}))) as { event?: { prompt: string } }
+  assert.equal(decision.event?.prompt, 'Fix the failing tests\n\nRedmine task #4077 "Checkout with saved cards"')
+  await worker.deactivate()
+})

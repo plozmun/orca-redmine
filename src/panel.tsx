@@ -1004,11 +1004,16 @@ const CLOSED_HINT = /closed|cerrad|resuel|resolved|done|hecho|finaliz/i
 const BLOCKED_HINT = /block|bloque|rechaz|reject/i
 const ACTIVE_HINT = /progress|curso|doing|desarroll/i
 
-function statusTone(status: string): 'neutral' | 'accent' | 'success' | 'warning' | 'danger' {
+/**
+ * A tone per status, outlined with a dot like the priority badge: open work (new, to do, feedback)
+ * green, in progress amber, blocked red. Finished tasks stay grey: they are rarely listed and need
+ * nothing.
+ */
+function statusTone(status: string): 'neutral' | 'success' | 'warning' | 'danger' {
   if (BLOCKED_HINT.test(status)) return 'danger'
-  if (CLOSED_HINT.test(status)) return 'success'
-  if (ACTIVE_HINT.test(status)) return 'accent'
-  return 'neutral'
+  if (CLOSED_HINT.test(status)) return 'neutral'
+  if (ACTIVE_HINT.test(status)) return 'warning'
+  return 'success'
 }
 
 /** Priorities worth pointing out in a list; the usual one is left out to keep rows quiet. */

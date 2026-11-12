@@ -1333,7 +1333,7 @@ function TimeTab({ issue }: { issue: IssueDetail }) {
 function DetailRow({ label, children }: { label: string; children: unknown }) {
   return (
     <Row gap="sm" align="center">
-      <Box width={88} shrink={false}>
+      <Box width={72} shrink={false}>
         <Text size="xs" muted>
           {label}
         </Text>

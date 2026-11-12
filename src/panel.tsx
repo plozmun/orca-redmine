@@ -622,12 +622,12 @@ function ConnectForm() {
   return (
     <Stack gap="md">
       <Heading>{t('connect.title')}</Heading>
-      <Text muted size="sm">
+      <Text muted size="xs">
         {t('connect.help')}
       </Text>
       {status?.errorCode ? (
         <Callout tone="danger" title={t('connect.failed')}>
-          <Text>{translateErrorCode(env.locale, status.errorCode, status.errorDetail ?? '') ?? status.errorDetail ?? ''}</Text>
+          <Text size="sm">{translateErrorCode(env.locale, status.errorCode, status.errorDetail ?? '') ?? status.errorDetail ?? ''}</Text>
         </Callout>
       ) : null}
       {status?.url && !read(editingUrl) ? (
@@ -775,7 +775,7 @@ function SearchPicker(props: PickerProps) {
           onChange={(v) => set(state.filter, v)}
           onSubmit={() => (shown[0] ? choose(shown[0].value) : undefined)}
         />
-        {items.length > 0 ? <List label={label}>{items}</List> : <Text muted size="sm">{t('picker.empty')}</Text>}
+        {items.length > 0 ? <List label={label}>{items}</List> : <Text muted size="xs">{t('picker.empty')}</Text>}
         <Row justify="between" gap="xs">
           <Text muted size="xs">
             {matches.length > shown.length
@@ -812,7 +812,7 @@ function FollowupCard({ followup, open }: { followup: Followup; open: FollowupAc
   return (
     <Box background="muted" radius="md" padding="sm" direction="column" gap="xs">
       <Row justify="between" align="center" gap="xs">
-        <Text size="sm" weight="semibold">
+        <Text size="xs" weight="semibold">
           {t(removed ? 'followup.workspaceRemoved' : 'followup.agentDone', { id: followup.issueId })}
         </Text>
         <RelativeTime at={followup.at} muted />
@@ -826,19 +826,19 @@ function FollowupCard({ followup, open }: { followup: Followup; open: FollowupAc
         </Text>
       )}
       <Row wrap gap="xs">
-        <Button size="sm" variant="outline" icon="open-external" onPress={() => openIssue(followup.issueId)}>
+        <Button size="xs" variant="outline" icon="open-external" onPress={() => openIssue(followup.issueId)}>
           {t('followup.open')}
         </Button>
-        <Button size="sm" variant="outline" icon="edit" disabled={disabled} onPress={() => startFollowupAction(followup, 'comment')}>
+        <Button size="xs" variant="outline" icon="edit" disabled={disabled} onPress={() => startFollowupAction(followup, 'comment')}>
           {t('followup.comment')}
         </Button>
-        <Button size="sm" variant="outline" icon="check" disabled={disabled} onPress={() => startFollowupAction(followup, 'status')}>
+        <Button size="xs" variant="outline" icon="check" disabled={disabled} onPress={() => startFollowupAction(followup, 'status')}>
           {t(removed ? 'followup.close' : 'followup.status')}
         </Button>
-        <Button size="sm" variant="outline" icon="calendar" disabled={disabled} onPress={() => startFollowupAction(followup, 'time')}>
+        <Button size="xs" variant="outline" icon="calendar" disabled={disabled} onPress={() => startFollowupAction(followup, 'time')}>
           {t('followup.time')}
         </Button>
-        <Button size="sm" variant="ghost" icon="close" disabled={disabled} onPress={() => dismissFollowup(followup)}>
+        <Button size="xs" variant="ghost" icon="close" disabled={disabled} onPress={() => dismissFollowup(followup)}>
           {t('followup.dismiss')}
         </Button>
       </Row>
@@ -853,7 +853,7 @@ function FollowupCard({ followup, open }: { followup: Followup; open: FollowupAc
             onChange={(v) => set(followupNote, v)}
           />
           <Row justify="end">
-            <Button size="sm" icon="edit" disabled={disabled || !read(followupNote).trim()} onPress={() => commentFollowup(followup)}>
+            <Button size="xs" icon="edit" disabled={disabled || !read(followupNote).trim()} onPress={() => commentFollowup(followup)}>
               {t('followup.commentSubmit')}
             </Button>
           </Row>
@@ -1011,9 +1011,26 @@ function statusTone(status: string): 'neutral' | 'accent' | 'success' | 'warning
   return 'neutral'
 }
 
-/** One task as a small card: number and state, the subject on its own lines, then the details. */
-function IssueRow({ issue, assigned, showProject }: { issue: IssueSummary; assigned: boolean; showProject: boolean }) {
-  const meta = [issue.priority, issue.assignee ?? t('issue.unassigned'), ...(showProject ? [issue.project] : [])]
+/** Priorities worth pointing out in a list; the usual one is left out to keep rows quiet. */
+const URGENT_PRIORITY = /urgent|immediate|inmediat|alta|high/i
+
+interface RowOptions {
+  showProject: boolean
+  /** Every listed task has the same assignee (only mine) or status (one status chosen): not repeated. */
+  showAssignee: boolean
+  showStatus: boolean
+}
+
+/**
+ * One task, compact: number, tracker and anything unusual (state, a high priority) on one line, the
+ * subject, then the project and assignee when the list mixes them.
+ */
+function IssueRow({ issue, assigned, options }: { issue: IssueSummary; assigned: boolean; options: RowOptions }) {
+  const urgent = URGENT_PRIORITY.test(issue.priority)
+  const meta = [
+    ...(options.showProject ? [issue.project] : []),
+    ...(options.showAssignee ? [issue.assignee ?? t('issue.unassigned')] : [])
+  ]
   return (
     <ListItem key={`issue-${issue.id}`} current={assigned} onPress={() => openIssue(issue.id)}>
       <Stack gap="xs">
@@ -1021,14 +1038,19 @@ function IssueRow({ issue, assigned, showProject }: { issue: IssueSummary; assig
           <Text size="xs" muted truncate>
             {`#${issue.id} · ${issue.tracker}`}
           </Text>
-          <Badge tone={statusTone(issue.status)}>{issue.status}</Badge>
+          <Row gap="xs" align="center">
+            {urgent ? <Badge tone="warning">{issue.priority}</Badge> : null}
+            {options.showStatus ? <Badge tone={statusTone(issue.status)}>{issue.status}</Badge> : null}
+          </Row>
         </Row>
-        <Text size="sm" weight="medium">
+        <Text size="xs" weight="medium">
           {issue.subject}
         </Text>
-        <Text size="xs" muted truncate>
-          {meta.join(' · ')}
-        </Text>
+        {meta.length > 0 ? (
+          <Text size="xs" muted truncate>
+            {meta.join(' · ')}
+          </Text>
+        ) : null}
       </Stack>
     </ListItem>
   )
@@ -1038,6 +1060,11 @@ function IssueList() {
   const assigned = assignedIssue()
   const list = read(issues)
   const filtered = currentProject() !== null
+  const rowOptions: RowOptions = {
+    showProject: !filtered,
+    showAssignee: !read(onlyMine),
+    showStatus: !/^\d+$/.test(read(statusFilter))
+  }
   return (
     <Stack gap="sm">
       <WorkspaceBar />
@@ -1076,7 +1103,7 @@ function IssueList() {
       ) : (
         <List label={t('list.count', { shown: list.length, total: read(total) })}>
           {list.map((issue) => (
-            <IssueRow issue={issue} assigned={issue.id === assigned?.id} showProject={!filtered} />
+            <IssueRow issue={issue} assigned={issue.id === assigned?.id} options={rowOptions} />
           ))}
         </List>
       )}
@@ -1089,7 +1116,7 @@ function LaunchSection({ issue }: { issue: IssueDetail }) {
   return (
     <Collapsible title={t('launch.title')} description={t('launch.subtitle')}>
       <Stack gap="sm">
-        <Text muted size="sm">
+        <Text muted size="xs">
           {t('launch.name', { name: workspaceNameFor(issue) })}
         </Text>
         {read(orcaProjects).length > 0 ? (
@@ -1103,7 +1130,7 @@ function LaunchSection({ issue }: { issue: IssueDetail }) {
             onChange={(v) => set(launchProject, v ?? '')}
           />
         ) : (
-          <Text muted size="sm">
+          <Text muted size="xs">
             {t('launch.noOrcaProjects')}
           </Text>
         )}
@@ -1261,11 +1288,11 @@ function TimeTab({ issue }: { issue: IssueDetail }) {
       {entries === null ? (
         <Spinner label={t('time.loading')} />
       ) : failed ? (
-        <Text muted size="sm">
+        <Text muted size="xs">
           {failed}
         </Text>
       ) : entries.length === 0 ? (
-        <Text muted size="sm">
+        <Text muted size="xs">
           {t('time.none')}
         </Text>
       ) : (
@@ -1296,18 +1323,18 @@ function IssueView({ issue }: { issue: IssueDetail }) {
   const disabled = read(busy)
   const assigned = assignedIssue()
   const isWorkspaceTask = assigned?.id === issue.id
-  const urgent = /urgent|immediate|inmediat|alta|high/i.test(issue.priority)
+  const urgent = URGENT_PRIORITY.test(issue.priority)
   return (
     <Stack gap="md">
       {/* Header, like Orca's Checks panel: number and state, title, then a muted meta line. */}
       <Stack gap="xs">
         <Row justify="between" align="center">
           <Row gap="xs" align="center">
-            <Button variant="ghost" size="sm" onPress={closeIssue}>
+            <Button variant="ghost" size="xs" onPress={closeIssue}>
               {t('issue.back')}
             </Button>
             <Text size="sm" weight="semibold">{`#${issue.id}`}</Text>
-            <Badge tone="accent">{issue.status}</Badge>
+            <Badge tone={statusTone(issue.status)}>{issue.status}</Badge>
           </Row>
           <IconButton
             icon="open-external"
@@ -1317,7 +1344,9 @@ function IssueView({ issue }: { issue: IssueDetail }) {
             onPress={() => shell.openExternal(issue.url)}
           />
         </Row>
-        <Text weight="medium">{issue.subject}</Text>
+        <Text size="sm" weight="semibold">
+          {issue.subject}
+        </Text>
         <Text muted size="xs">
           {`${issue.tracker} · ${t('issue.updated')} `}
           <RelativeTime at={Date.parse(issue.updatedOn) || Date.now()} />
@@ -1378,7 +1407,7 @@ function IssueView({ issue }: { issue: IssueDetail }) {
                 onChange={(v) => set(terminalId, v)}
               />
             ) : (
-              <Text muted size="sm">
+              <Text muted size="xs">
                 {t('send.noTerminals')}
               </Text>
             )}
@@ -1396,7 +1425,7 @@ function IssueView({ issue }: { issue: IssueDetail }) {
               <Markdown content={textileToMarkdown(issue.description)} />
             </Box>
           ) : (
-            <Text muted size="sm">
+            <Text muted size="xs">
               {t('issue.noDescription')}
             </Text>
           )}
@@ -1405,7 +1434,7 @@ function IssueView({ issue }: { issue: IssueDetail }) {
         <Tab value="activity" label={t('tabs.activity', { count: issue.journals.length })} icon="activity">
           <Stack gap="sm">
             {issue.journals.length === 0 ? (
-              <Text muted size="sm">
+              <Text muted size="xs">
                 {t('issue.noComments')}
               </Text>
             ) : (
@@ -1507,12 +1536,12 @@ export default function Panel() {
       {status?.configured && read(confirmingDisconnect) ? <DisconnectConfirm status={status} /> : null}
       {err ? (
         <Callout tone="danger" icon="error">
-          <Text>{err}</Text>
+          <Text size="sm">{err}</Text>
         </Callout>
       ) : null}
       {info ? (
         <Callout tone="success" icon="check">
-          <Text>{info}</Text>
+          <Text size="sm">{info}</Text>
         </Callout>
       ) : null}
       {status?.configured ? <FollowupStrip /> : null}

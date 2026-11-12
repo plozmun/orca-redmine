@@ -710,7 +710,7 @@ function SearchPicker(props: PickerProps) {
           </Text>
         </Box>
         <Row gap="none" align="center">
-          <Text size="sm" truncate>
+          <Text size="xs" truncate>
             <Link key={`${id}-open`} onPress={() => set(state.open, true)}>
               {current?.label ?? noneLabel ?? placeholder ?? ''}
             </Link>
@@ -1016,9 +1016,8 @@ const URGENT_PRIORITY = /urgent|immediate|inmediat|alta|high/i
 
 interface RowOptions {
   showProject: boolean
-  /** Every listed task has the same assignee (only mine) or status (one status chosen): not repeated. */
+  /** Every listed task has the same assignee when only mine are listed: not repeated. */
   showAssignee: boolean
-  showStatus: boolean
 }
 
 /**
@@ -1035,12 +1034,15 @@ function IssueRow({ issue, assigned, options }: { issue: IssueSummary; assigned:
     <ListItem key={`issue-${issue.id}`} current={assigned} onPress={() => openIssue(issue.id)}>
       <Stack gap="xs">
         <Row justify="between" align="center" gap="xs">
-          <Text size="xs" muted truncate>
-            {`#${issue.id} · ${issue.tracker}`}
-          </Text>
+          <Row gap="xs" align="center">
+            <Text size="xs" weight="semibold" tone="accent">{`#${issue.id}`}</Text>
+            <Text size="xs" muted truncate>
+              {issue.tracker}
+            </Text>
+          </Row>
           <Row gap="xs" align="center">
             {urgent ? <Badge tone="warning">{issue.priority}</Badge> : null}
-            {options.showStatus ? <Badge tone={statusTone(issue.status)}>{issue.status}</Badge> : null}
+            <Badge tone={statusTone(issue.status)}>{issue.status}</Badge>
           </Row>
         </Row>
         <Text size="xs" weight="medium">
@@ -1062,13 +1064,10 @@ function IssueList() {
   const filtered = currentProject() !== null
   const rowOptions: RowOptions = {
     showProject: !filtered,
-    showAssignee: !read(onlyMine),
-    showStatus: !/^\d+$/.test(read(statusFilter))
+    showAssignee: !read(onlyMine)
   }
   return (
     <Stack gap="sm">
-      <WorkspaceBar />
-      <StatusPicker />
       <Input
         label={t('list.search')}
         labelHidden
@@ -1078,11 +1077,10 @@ function IssueList() {
         onChange={(v) => set(search, v)}
         onSubmit={() => loadIssues()}
       />
-      <Row justify="between" align="center" gap="xs">
-        <SectionHeader
-          title={t('section.tasks')}
-          count={read(loading) ? undefined : list.length < read(total) ? `${list.length}/${read(total)}` : list.length}
-        />
+      {/* Filters in one quiet card, label on the left and value on the right, as Orca's sidebars. */}
+      <Box background="muted" radius="md" paddingX="sm" paddingY="xs" direction="column" gap="xs">
+        <WorkspaceBar />
+        <StatusPicker />
         <Switch
           label={t('list.onlyMine')}
           checked={read(onlyMine)}
@@ -1091,7 +1089,11 @@ function IssueList() {
             void loadIssues()
           }}
         />
-      </Row>
+      </Box>
+      <SectionHeader
+        title={t('section.tasks')}
+        count={read(loading) ? undefined : list.length < read(total) ? `${list.length}/${read(total)}` : list.length}
+      />
       {read(loading) ? (
         <Spinner label={t('list.loading')} />
       ) : list.length === 0 ? (

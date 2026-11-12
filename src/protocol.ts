@@ -68,6 +68,16 @@ declare module 'orca' {
      * panel's language. The context goes in a file (`<tmp>/orca-redmine/<id>.md`) the prompt points to.
      */
     'redmine.sendToAgent': { input: { id: number; terminalId: string; locale: string }; output: { accepted: boolean } }
+    /** Whether this Orca can start an agent in a workspace (`agent.launch`); the panel hides the action when it cannot. */
+    'redmine.launchHereSupport': { output: { available: boolean } }
+    /**
+     * Starts `agent` in a new terminal of the focused workspace with the prompt a new-workspace launch
+     * gets. `workspaceKey` is that workspace's link key, so the panel can assign the task to it.
+     */
+    'redmine.launchHere': {
+      input: { issueId: number; agent: string; instructions: string; locale: string; comments?: CommentsMode }
+      output: { terminalId: string; workspaceKey: string | null }
+    }
   }
   interface PluginPanelEvents {
     /** After a status change, comment or time entry: open panels reload the issue. */

@@ -2,6 +2,7 @@ import { assert, test } from 'orca/testing'
 import {
   createWorktreeArgs,
   describeWorktree,
+  findWorkspaceId,
   keyFromHostId,
   matchHostWorkspace,
   matchWorktree,
@@ -90,6 +91,22 @@ test('the host listing uses the same matching rule as the CLI and ignores folder
     const context = { displayName: w.displayName ?? '', branch: w.branch ?? '' }
     assert.equal(matchHostWorkspace(hostRows, context), matchWorktree(listing, context)?.workspaceKey)
   }
+})
+
+test('the host id of the focused workspace is what other host methods take', () => {
+  const id = (displayName: string, branch: string) => findWorkspaceId(hostRows, { displayName, branch })
+  // One match by name.
+  assert.equal(id('kyb', 'develop'), 'identity:wt2:local:aaa')
+  // Duplicate names: the branch tells them apart.
+  assert.equal(id('login', 'feature/9-login'), 'identity:wt2:local:ccc')
+  assert.equal(id('login', 'feature/123-login'), 'identity:wt2:local:bbb')
+  assert.equal(id('login', 'other'), null)
+  // Renamed: a unique branch still finds it.
+  assert.equal(id('renamed', 'refs/heads/feature/123-login'), 'identity:wt2:local:bbb')
+  // No match, and folders are never matched.
+  assert.equal(id('none', 'main'), null)
+  assert.equal(id('docs', 'main'), null)
+  assert.equal(findWorkspaceId([], { displayName: 'kyb', branch: 'develop' }), null)
 })
 
 test('the Orca project of a key comes from the CLI listing', () => {

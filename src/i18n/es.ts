@@ -104,6 +104,13 @@ export const es: Messages = {
   'launch.doneAgent': '{agent} lanzado.',
   'launch.assigned': 'Tarea asignada.',
 
+  'here.title': 'Lanzar agente en el workspace actual',
+  'here.subtitle': 'Arranca el agente en un terminal nuevo aquí, con las mismas instrucciones y contexto',
+  'here.submit': 'Lanzar agente aquí',
+  'here.done': '{agent} iniciado en este workspace.',
+  'here.noWorkspace': 'Abre un workspace para lanzar el agente en él.',
+  'here.unsupported': 'Esta versión de Orca no puede lanzar agentes en un workspace: actualiza Orca.',
+
   'agent.cliHint': 'Tienes el CLI `redmine` para leer o actualizar la tarea #{id}.',
   'agent.noCli': 'El agente recibe el texto de la tarea desde el plugin. Para que también pueda comentarla o actualizarla, instala redmine-cli (el comando `redmine`) y su skill para agentes.',
 
@@ -149,6 +156,12 @@ export const es: Messages = {
   'errors.need_comment': 'Escribe un comentario',
   'errors.need_hours': 'Indica las horas, p. ej. 1.5',
   'errors.no_terminals': 'No hay terminales en el workspace actual',
+  'errors.no_workspace': 'Abre un workspace para lanzar el agente en él',
+  'errors.agent_launch_unavailable': 'Esta versión de Orca no puede lanzar agentes en un workspace: actualiza Orca',
+  'errors.capability_denied': 'Orca no dejó al plugin lanzar agentes: aprueba sus permisos',
+  'errors.unknown_method': 'Esta versión de Orca no ofrece esa acción',
+  'errors.invalid_params': 'Orca rechazó la petición: agente desconocido o prompt demasiado largo',
+  'errors.action_failed': 'Orca no pudo iniciar el agente ({detail})',
 
   'command.notConfigured': 'Redmine no está configurado: abre el panel Redmine (icono de bandera en la barra lateral derecha) e introduce la URL y tu API key.',
   'command.noIssues': 'No tienes tareas abiertas en Redmine.',

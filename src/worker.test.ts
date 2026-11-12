@@ -190,6 +190,108 @@ test('launch uses the contextComments and contextMaxChars settings unless the pa
   await worker.deactivate()
 })
 
+// --- Launch in the focused workspace (agent.launch) ---
+
+const hostWorkspace = { branch: 'feature/1-pay', displayName: 'pay', terminals: [] }
+const hostRows = {
+  workspaces: [
+    { id: 'identity:wt-1', kind: 'worktree', name: 'pay', path: '/p', branch: 'feature/1-pay', hostId: null },
+    { id: 'identity:wt-2', kind: 'worktree', name: 'pay', path: '/q', branch: 'other', hostId: null }
+  ],
+  truncated: false
+}
+
+function launchHereHost(extra: Record<string, unknown> = {}, context: unknown = hostWorkspace) {
+  return mockHost({
+    ...configured,
+    capabilities: ['settings:own', 'secrets:own', 'workspace:read', 'agent:launch'],
+    results: {
+      'workspace.readContext': context,
+      'workspace.list': hostRows,
+      'agent.launch': { terminalId: 't9' },
+      ...extra
+    }
+  })
+}
+
+test('launch here starts the agent in the focused workspace with the task prompt', async () => {
+  stubFetch({ '/issues/77.json': { issue: { ...issue, description: 'Integrate payments' } } })
+  main.setRedmineCliDetector(async () => null)
+  const host = launchHereHost()
+  const worker = await mountWorker(main, { host })
+  assert.deepEqual(await worker.request('redmine.launchHereSupport'), { available: true })
+  assert.deepEqual(await worker.request('redmine.launchHere', { issueId: 77, agent: 'claude', instructions: 'Do it', locale: 'en' }), {
+    terminalId: 't9',
+    workspaceKey: 'wt-1'
+  })
+  const [params] = host.callsOf('agent.launch') as { workspaceId: string; agent: string; prompt: string }[]
+  // The `workspace.list` id, the one every host workspace method takes.
+  assert.equal(params.workspaceId, 'identity:wt-1')
+  assert.equal(params.agent, 'claude')
+  assert.ok(params.prompt.startsWith('Do it\n'))
+  assert.ok(params.prompt.includes('Integrate payments'))
+  assert.ok(params.prompt.includes('--- BEGIN LINKED WORK ITEM CONTEXT ---'))
+  assert.ok(!params.prompt.includes('CLI'))
+  assert.deepEqual(worker.refusals, [])
+  await worker.deactivate()
+})
+
+test('launch here says why it could not start the agent, with codes', async () => {
+  stubFetch({ '/issues/77.json': { issue } })
+  const run = async (host: ReturnType<typeof mockHost>) => {
+    const worker = await mountWorker(main, { host })
+    const fail = async (input = { issueId: 77, agent: 'claude', instructions: 'Go', locale: 'en' }) => {
+      try {
+        await worker.request('redmine.launchHere', input)
+        return null
+      } catch (error) {
+        return (error as { code?: string }).code
+      }
+    }
+    const first = await fail()
+    await worker.deactivate()
+    return { first }
+  }
+
+  // No focused workspace.
+  assert.equal((await run(launchHereHost({}, null))).first, 'no_workspace')
+  // A workspace the host does not list.
+  assert.equal((await run(launchHereHost({ 'workspace.list': { workspaces: [], truncated: false } }))).first, 'workspace_not_listed')
+  // Whatever the host refuses (`agent.launch` errors keep their code).
+  assert.equal(
+    (await run(
+      launchHereHost({
+        'agent.launch': () => {
+          throw Object.assign(new Error('unknown agent'), { code: 'invalid_params' })
+        }
+      })
+    )).first,
+    'invalid_params'
+  )
+})
+
+test('a prompt over agent.launch’s cap moves the context to a file and points at it', async () => {
+  const { mkdtemp, readFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = await mkdtemp(join(tmpdir(), 'redmine-here-'))
+  main.setContextDir(dir)
+  main.setRedmineCliDetector(async () => null)
+  stubFetch({ '/issues/77.json': { issue: { ...issue, description: 'Detail '.repeat(2000) } } })
+  const host = launchHereHost()
+  const worker = await mountWorker(main, { host })
+  await worker.request('redmine.launchHere', { issueId: 77, agent: 'claude', instructions: 'Do it', locale: 'en' })
+  const [params] = host.callsOf('agent.launch') as { prompt: string }[]
+  const file = join(dir, '77.md')
+  assert.ok(params.prompt.length <= 4096)
+  assert.ok(params.prompt.startsWith('Do it\n'))
+  assert.ok(params.prompt.includes(`Read its description and comments in ${file} first.`))
+  assert.ok(!params.prompt.includes('--- BEGIN LINKED WORK ITEM CONTEXT ---'))
+  assert.ok((await readFile(file, 'utf8')).includes('--- BEGIN LINKED WORK ITEM CONTEXT ---'))
+  main.setContextDir(undefined)
+  await worker.deactivate()
+})
+
 test('send to agent uses the sendPrompt setting template', async () => {
   const { mkdtemp } = await import('node:fs/promises')
   const { tmpdir } = await import('node:os')
@@ -246,7 +348,12 @@ test('the API key never reaches logs, errors, prompts, terminals or context file
   const host = mockHost({
     settings: { url: 'https://redmine.test', limit: 50 },
     secrets: { apiKey: KEY },
-    results: { 'terminal.sendText': { accepted: true } }
+    results: {
+      'terminal.sendText': { accepted: true },
+      'workspace.readContext': hostWorkspace,
+      'workspace.list': hostRows,
+      'agent.launch': { terminalId: 't9' }
+    }
   })
   const worker = await mountWorker(main, { host })
   const seen: unknown[] = []
@@ -276,6 +383,7 @@ test('the API key never reaches logs, errors, prompts, terminals or context file
     worker.request('redmine.launchWorkspace', { issueId: 77, orcaProjectId: 'p', agent: 'claude', instructions: 'Go', activate: false, locale: 'en' })
   )
   await call(() => worker.request('redmine.sendToAgent', { id: 77, terminalId: 't1', locale: 'en' }))
+  await call(() => worker.request('redmine.launchHere', { issueId: 77, agent: 'claude', instructions: 'Go', locale: 'en' }))
 
   const files = await Promise.all((await readdir(dir)).map((f) => readFile(join(dir, f), 'utf8')))
   assert.ok(files.length > 0 && prompts.length > 0 && worker.logs.length > 0, 'the paths under test ran')
@@ -286,6 +394,7 @@ test('the API key never reaches logs, errors, prompts, terminals or context file
     prompts,
     files,
     sent: host.callsOf('terminal.sendText'),
+    launched: host.callsOf('agent.launch'),
     settings: host.data().settings
   })
   assert.ok(!everything.includes(KEY), 'the API key leaked')

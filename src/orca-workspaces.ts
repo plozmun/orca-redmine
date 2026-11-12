@@ -111,11 +111,20 @@ export function keyFromHostId(id: string): string | null {
   return id.startsWith(HOST_ID_PREFIX) && id.length > HOST_ID_PREFIX.length ? id.slice(HOST_ID_PREFIX.length) : null
 }
 
-/** The link key of the focused worktree in the host's listing, or null. Folders are never linked. */
-export function matchHostWorkspace(rows: readonly HostWorkspaceRow[], context: FocusedContext): string | null {
+/**
+ * The host's `workspace.list` id of the focused worktree (`identity:<key>`), or null. It is what
+ * every other host workspace method takes, `agent.launch` included. Folders never match.
+ */
+export function findWorkspaceId(rows: readonly HostWorkspaceRow[], context: FocusedContext): string | null {
   const worktrees = rows.filter((r) => r.kind === 'worktree')
   const pick = pickRow(worktrees, (r) => r.name, (r) => r.branch, context)
-  return pick ? keyFromHostId(pick.id) : null
+  return pick ? pick.id : null
+}
+
+/** The link key of the focused worktree in the host's listing, or null. Folders are never linked. */
+export function matchHostWorkspace(rows: readonly HostWorkspaceRow[], context: FocusedContext): string | null {
+  const id = findWorkspaceId(rows, context)
+  return id ? keyFromHostId(id) : null
 }
 
 const CLI_CANDIDATES = [process.env.ORCA_CLI, 'orca', '/usr/local/bin/orca', '/opt/homebrew/bin/orca'].filter(

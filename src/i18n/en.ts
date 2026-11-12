@@ -62,6 +62,28 @@ export const en = {
   'statusFilter.clear': 'Show open tasks',
   'list.count': '{shown} of {total} tasks',
 
+  // Follow-ups: what to do now that an agent finished or a linked workspace went away
+  'followup.section': 'Follow-ups',
+  'followup.agentDone': 'Agent finished on #{id}',
+  'followup.workspaceRemoved': 'Workspace removed: close #{id}?',
+  'followup.workspace': 'Workspace “{name}”',
+  'followup.hoursSeen': 'Your agent worked about {hours} h',
+  'followup.open': 'Open task',
+  'followup.comment': 'Comment',
+  'followup.status': 'Change status',
+  'followup.close': 'Close task',
+  'followup.time': 'Log time',
+  'followup.dismiss': 'Dismiss',
+  'followup.commentPlaceholder': 'What was done…',
+  'followup.commentSubmit': 'Add comment',
+  'followup.statusLabel': 'Status',
+  'followup.statusSubmit': 'Apply status',
+  'followup.closeSubmit': 'Close it',
+  'followup.noClosedStatuses': 'Redmine does not offer a closed status.',
+  'followup.hours': 'Hours',
+  'followup.timeSubmit': 'Save time',
+  'followup.hint': 'Nothing is written to Redmine until you choose an action.',
+
   // Issue detail
   'issue.loading': 'Loading task',
   'issue.back': '← Back',
@@ -160,9 +182,12 @@ export const en = {
   'errors.need_orca_project': 'Choose the Orca project where the workspace will be created',
   'errors.need_comment': 'Write a comment',
   'errors.need_hours': 'Enter the hours, e.g. 1.5',
+  'errors.need_status': 'Choose a status',
   'errors.no_terminals': 'The current workspace has no terminals',
 
-  // Command palette (worker)
+  // Command palette and notifications (worker; the machine's language)
+  'notification.agentDone': '#{id} Agent finished: {subject}',
+  'notification.agentBlocked': 'Agent on #{id} needs input: {subject}',
   'command.notConfigured': 'Redmine is not configured: open the Redmine panel (flag icon in the right sidebar) and enter the URL and your API key.',
   'command.noIssues': 'You have no open Redmine tasks.',
   'command.header': '{total} open tasks assigned to you:'

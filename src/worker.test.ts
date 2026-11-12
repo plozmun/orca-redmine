@@ -1,6 +1,7 @@
 // Runs src/worker.ts's activate(orca) over a mock host, with `fetch` and the Orca CLI stubbed.
 import { afterEach, assert, mockHost, mountWorker, test } from 'orca/testing'
 import * as main from './worker'
+import { createFollowup, MAX_FOLLOWUPS, type Followup } from './followups'
 
 const realFetch = globalThis.fetch
 
@@ -434,7 +435,7 @@ const created = (name: string, extra: Partial<{ kind: 'worktree' | 'folder'; bra
   branch: extra.branch ?? `refs/heads/pablo/${name}`
 })
 
-async function createdWorker(options: { settings?: Record<string, unknown>; storage?: Record<string, unknown>; orcaProject?: string | null } = {}) {
+async function createdWorker(options: { settings?: Record<string, unknown>; storage?: Record<string, unknown>; orcaProject?: string | null; capabilities?: readonly string[] } = {}) {
   const writes = redmineWith4077()
   main.setOrcaLister(async () => ({
     projects: [],
@@ -446,6 +447,7 @@ async function createdWorker(options: { settings?: Record<string, unknown>; stor
   }))
   const host = mockHost({
     ...configured,
+    ...(options.capabilities ? { capabilities: options.capabilities } : {}),
     settings: { ...configured.settings, ...options.settings },
     storage: options.storage as never,
     results: { 'workspace.list': { workspaces: [], truncated: false } }
@@ -528,5 +530,159 @@ test('without a stable key for the created workspace nothing is linked', async (
   await worker.emit('workspace.created', created('4077-checkout', { workspaceId: 'r::/repos/shop/4077-checkout' }))
   assert.equal(links(), undefined)
   assert.ok(worker.logs.some((l) => l.startsWith('workspace.created: no link key')))
+  await worker.deactivate()
+})
+
+// --- Follow-ups: agent finished, workspace removed ---
+
+const followupsOf = (host: ReturnType<typeof mockHost>): Followup[] =>
+  ((host.data().storage.followups as Followup[] | undefined) ?? [])
+
+function agentEvent(workspaceId: string | null, state: 'working' | 'blocked' | 'done', receivedAt: number, outcome?: 'success' | 'failure' | 'cancellation' | 'unconfirmed') {
+  return {
+    workspaceId,
+    paneKey: 'pane-1',
+    state,
+    receivedAt,
+    ...(state === 'done'
+      ? { mainAgent: { state, ...(outcome ? { outcome } : {}), stateStartedAt: receivedAt } }
+      : {})
+  }
+}
+
+test('an agent finishing on a linked task records a follow-up and writes nothing to Redmine', async () => {
+  const { worker, host, writes } = await createdWorker()
+  await worker.emit('workspace.created', created('4077-checkout'))
+  const start = 1_000_000
+  await worker.emit('agent.status.changed', agentEvent('identity:wt-4077-checkout', 'working', start))
+  await worker.emit('agent.status.changed', agentEvent('identity:wt-4077-checkout', 'done', start + 70 * 60_000, 'success'))
+
+  const list = followupsOf(host)
+  assert.equal(list.length, 1)
+  assert.equal(list[0].kind, 'agentDone')
+  assert.equal(list[0].issueId, 4077)
+  assert.equal(list[0].workspaceName, '4077-checkout')
+  assert.equal(list[0].hours, 1.25)
+  assert.deepEqual(writes, [], 'no Redmine write request')
+  assert.deepEqual(worker.posts.at(-1), { event: 'redmine.followupsChanged', payload: { followups: list } })
+  await worker.deactivate()
+})
+
+test('no follow-up for a cancelled agent, an unlinked workspace or no workspace', async () => {
+  const { worker, host } = await createdWorker()
+  await worker.emit('workspace.created', created('4077-checkout'))
+  await worker.emit('agent.status.changed', agentEvent('identity:wt-4077-checkout', 'done', 2_000, 'cancellation'))
+  await worker.emit('agent.status.changed', agentEvent('identity:wt-unlinked', 'done', 3_000, 'success'))
+  await worker.emit('agent.status.changed', agentEvent(null, 'done', 4_000, 'success'))
+  assert.deepEqual(followupsOf(host), [])
+  await worker.deactivate()
+})
+
+test('agent events name the workspace by the CLI id too', async () => {
+  const { worker, host } = await createdWorker()
+  // As Orca 1.4.255 sends it: `<repoId>::<path>`.
+  await worker.emit('workspace.created', created('4077-checkout', { workspaceId: 'r::/repos/shop/4077-checkout' }))
+  // The worktree listing may be gone or slow: the ids remembered at creation must be enough.
+  main.setOrcaLister(async () => ({ projects: [], worktrees: [] }))
+  await worker.emit('agent.status.changed', agentEvent('r::/repos/shop/4077-checkout', 'done', 5_000, 'success'))
+  assert.equal(followupsOf(host)[0]?.issueId, 4077)
+  await worker.deactivate()
+})
+
+test('an agent that finishes twice leaves a single follow-up with the latest time', async () => {
+  const { worker, host } = await createdWorker()
+  await worker.emit('workspace.created', created('4077-checkout'))
+  await worker.emit('agent.status.changed', agentEvent('identity:wt-4077-checkout', 'done', 2_000, 'success'))
+  // The agent works again (a new turn), then finishes again.
+  await worker.emit('agent.status.changed', agentEvent('identity:wt-4077-checkout', 'working', 2_500))
+  await worker.emit('agent.status.changed', agentEvent('identity:wt-4077-checkout', 'done', 3_000, 'failure'))
+  const list = followupsOf(host)
+  assert.equal(list.length, 1)
+  assert.equal(list[0].at, 3_000)
+  await worker.deactivate()
+})
+
+test('removing a linked workspace deletes the link and records a follow-up', async () => {
+  const { worker, host, links, writes } = await createdWorker()
+  await worker.emit('workspace.created', created('4077-checkout', { workspaceId: 'r::/repos/shop/4077-checkout' }))
+  assert.equal(links()?.['wt-4077-checkout']?.id, 4077)
+  main.setOrcaLister(async () => ({ projects: [], worktrees: [] }))
+  await worker.emit('workspace.removed', { workspaceId: 'r::/repos/shop/4077-checkout', kind: 'worktree', path: '/repos/shop/4077-checkout' })
+  assert.equal(links()?.['wt-4077-checkout'], undefined)
+  const list = followupsOf(host)
+  assert.equal(list.length, 1)
+  assert.equal(list[0].kind, 'workspaceRemoved')
+  assert.equal(list[0].issueId, 4077)
+  assert.equal(list[0].workspaceName, '4077-checkout')
+  assert.deepEqual(writes, [])
+  await worker.deactivate()
+})
+
+test('removing an unlinked workspace records nothing', async () => {
+  const { worker, host } = await createdWorker()
+  await worker.emit('workspace.removed', { workspaceId: 'identity:wt-unlinked', kind: 'worktree', path: '/repos/shop/other' })
+  await worker.emit('workspace.removed', { workspaceId: 'identity:wt-unlinked', kind: 'folder', path: '/repos/shop/other' })
+  assert.deepEqual(followupsOf(host), [])
+  await worker.deactivate()
+})
+
+test('the notification is off by default and names the task when enabled', async () => {
+  const capabilities = ['workspace:read', 'agent:read', 'storage:own', 'settings:own', 'secrets:own', 'notifications:show']
+  const run = async (settings: Record<string, unknown>, event: ReturnType<typeof agentEvent>) => {
+    const w = await createdWorker({ capabilities, settings })
+    await w.worker.emit('workspace.created', created('4077-checkout'))
+    await w.worker.emit('agent.status.changed', event)
+    return w
+  }
+
+  // Default: the follow-up is recorded and no notification is shown.
+  let w = await run({}, agentEvent('identity:wt-4077-checkout', 'done', 2_000, 'success'))
+  assert.equal(followupsOf(w.host).length, 1)
+  assert.deepEqual(w.host.callsOf('notifications.show'), [])
+  await w.worker.deactivate()
+
+  // done: on finish only, with the number and subject.
+  w = await run({ agentNotification: 'done' }, agentEvent('identity:wt-4077-checkout', 'done', 2_000, 'success'))
+  const shown = w.host.callsOf('notifications.show') as { title: string }[]
+  assert.equal(shown.length, 1)
+  assert.equal(shown[0].title, '#4077 Agent finished: Checkout with saved cards')
+  await w.worker.deactivate()
+
+  // A cancellation notifies nobody even with notifications on.
+  w = await run({ agentNotification: 'done' }, agentEvent('identity:wt-4077-checkout', 'done', 2_000, 'cancellation'))
+  assert.deepEqual(w.host.callsOf('notifications.show'), [])
+  await w.worker.deactivate()
+
+  // doneAndBlocked: also when the main agent needs input, and still no follow-up for it.
+  w = await run({ agentNotification: 'doneAndBlocked' }, agentEvent('identity:wt-4077-checkout', 'blocked', 2_000))
+  const blocked = w.host.callsOf('notifications.show') as { title: string }[]
+  assert.equal(blocked.length, 1)
+  assert.equal(blocked[0].title, 'Agent on #4077 needs input: Checkout with saved cards')
+  assert.deepEqual(followupsOf(w.host), [])
+  await w.worker.deactivate()
+
+  // done alone does not notify for a blocked agent.
+  w = await run({ agentNotification: 'done' }, agentEvent('identity:wt-4077-checkout', 'blocked', 2_000))
+  assert.deepEqual(w.host.callsOf('notifications.show'), [])
+  await w.worker.deactivate()
+})
+
+test('follow-ups can be read and dismissed, and the store keeps at most 20', async () => {
+  const seeded = Array.from({ length: MAX_FOLLOWUPS }, (_, i) =>
+    createFollowup({ kind: 'agentDone', issueId: 5000 + i, workspaceName: `ws-${i}`, at: 1000 + i })
+  )
+  const { worker, host } = await createdWorker({ storage: { followups: seeded } })
+  await worker.emit('workspace.created', created('4077-checkout'))
+  await worker.emit('agent.status.changed', agentEvent('identity:wt-4077-checkout', 'done', 9_000, 'success'))
+
+  const listed = await worker.request('redmine.followups.get')
+  assert.equal(listed.followups.length, MAX_FOLLOWUPS)
+  assert.equal(listed.followups.some((f) => f.issueId === 5000), false, 'oldest dropped')
+  assert.ok(listed.followups.some((f) => f.issueId === 4077))
+
+  const dismissed = await worker.request('redmine.followups.dismiss', { id: listed.followups[0].id })
+  assert.equal(dismissed.followups.length, MAX_FOLLOWUPS - 1)
+  assert.deepEqual(followupsOf(host), dismissed.followups)
+  assert.deepEqual(worker.posts.at(-1), { event: 'redmine.followupsChanged', payload: { followups: dismissed.followups } })
   await worker.deactivate()
 })

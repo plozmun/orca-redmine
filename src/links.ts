@@ -6,6 +6,8 @@
 export const ISSUE_BY_WORKSPACE = 'links.issueByWorkspace'
 /** Orca project id → Redmine project identifier (the list filter for its workspaces). */
 export const PROJECT_BY_ORCA_PROJECT = 'links.projectByOrcaProject'
+/** Workspace id or path as Orca's events name it → the link key (for `workspace.removed`, when the worktree is already gone). */
+export const WORKSPACE_IDS_BY_KEY = 'links.workspaceIds'
 /** Set once the 0.1.x panel-only links were copied into storage. */
 export const LINKS_MIGRATED = 'links.migrated'
 

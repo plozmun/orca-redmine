@@ -49,6 +49,7 @@ import type { ConnectionStatus } from './protocol'
 import { textileToMarkdown } from './textile'
 import { ISSUE_BY_WORKSPACE, LINKS_MIGRATED, PROJECT_BY_ORCA_PROJECT, type AssignedIssue } from './links'
 import { taskRefFromWorkspace } from './task-ref'
+import type { Followup } from './followups'
 import { type IssueDetail, type IssueStatus, type IssueSummary, type Project, type TimeEntry } from './redmine'
 
 function t(key: MessageKey, vars?: Record<string, string | number>): string {
@@ -81,6 +82,14 @@ const error = atom<string | null>(null)
 const notice = atom<string | null>(null)
 const statuses = atom<IssueStatus[]>([])
 const projects = atom<Project[]>([])
+/** Pending follow-ups the worker recorded: agents that finished, linked workspaces removed. */
+const followups = atom<Followup[]>([])
+/** The action form open on one follow-up, if any. */
+type FollowupAction = 'comment' | 'status' | 'time'
+const followupAction = atom<{ id: string; action: FollowupAction } | null>(null)
+const followupNote = atom('')
+const followupHours = atom('')
+const followupStatus = atom('')
 const detail = atom<IssueDetail | null>(null)
 const workspace = atom<WorkspaceInfo | null>(null)
 const busy = atom(false)
@@ -371,6 +380,75 @@ function logTime(issue: IssueDetail): Promise<void> {
   })
 }
 
+// --- Follow-ups ---
+
+async function loadFollowups(): Promise<void> {
+  try {
+    set(followups, (await plugin.request('redmine.followups.get')).followups)
+  } catch {
+    // Follow-ups are secondary: if they cannot be read, the task list still works.
+  }
+}
+
+/** Statuses a follow-up offers: every one, but only closed ones when the workspace is gone. */
+function followupStatusOptions(followup: Followup): { value: string; label: string }[] {
+  const all = read(statuses)
+  const allowed = followup.kind === 'workspaceRemoved' ? all.filter((s) => s.isClosed) : all
+  return allowed.map((s) => ({ value: String(s.id), label: s.name }))
+}
+
+function startFollowupAction(followup: Followup, action: FollowupAction): void {
+  if (action === 'comment') set(followupNote, '')
+  if (action === 'time') set(followupHours, followup.hours === undefined ? '' : String(followup.hours))
+  if (action === 'status') set(followupStatus, followupStatusOptions(followup)[0]?.value ?? '')
+  set(followupAction, { id: followup.id, action })
+}
+
+/** Removes a follow-up once its action succeeded; the worker owns the store. */
+async function completeFollowup(followup: Followup): Promise<void> {
+  const answer = await plugin.request('redmine.followups.dismiss', { id: followup.id })
+  set(followups, answer.followups)
+  set(followupAction, null)
+}
+
+function dismissFollowup(followup: Followup): Promise<void> {
+  return run(async () => {
+    await completeFollowup(followup)
+  })
+}
+
+function commentFollowup(followup: Followup): Promise<void> {
+  return run(async () => {
+    const notes = read(followupNote).trim()
+    if (!notes) throw panelError('need_comment')
+    await plugin.request('redmine.comment', { id: followup.issueId, notes })
+    set(followupNote, '')
+    await completeFollowup(followup)
+    set(notice, t('comment.done'))
+  })
+}
+
+function statusFollowup(followup: Followup): Promise<void> {
+  return run(async () => {
+    const statusId = Number(read(followupStatus))
+    if (!statusId) throw panelError('need_status')
+    await plugin.request('redmine.setStatus', { id: followup.issueId, statusId })
+    await completeFollowup(followup)
+    set(notice, t('status.done'))
+  })
+}
+
+function timeFollowup(followup: Followup): Promise<void> {
+  return run(async () => {
+    const value = Number(read(followupHours).replace(',', '.'))
+    if (!Number.isFinite(value) || value <= 0) throw panelError('need_hours')
+    await plugin.request('redmine.logTime', { id: followup.issueId, hours: value, comments: '' })
+    set(followupHours, '')
+    await completeFollowup(followup)
+    set(notice, t('time.done', { hours: value, id: followup.issueId }))
+  })
+}
+
 function sendToAgent(issue: IssueDetail): Promise<void> {
   return run(async () => {
     const target = read(terminalId) || read(workspace)?.terminals[0]?.id
@@ -486,6 +564,10 @@ export function setup(ctx: PanelContext): void {
       if (read(detail)?.id === id) void openIssue(id)
     })
   )
+  ctx.subscriptions.push(
+    plugin.on('redmine.followupsChanged', ({ followups: next }) => set(followups, next))
+  )
+  void loadFollowups()
   void loadSettings()
   ctx.subscriptions.push(
     settings.onDidChange(({ key }) => {
@@ -683,6 +765,124 @@ function SectionHeader({ title, count, action }: { title: string; count?: number
       </Text>
       {action ?? null}
     </Row>
+  )
+}
+
+/** One pending follow-up: what happened, then the actions that would bring Redmine up to date. */
+function FollowupCard({ followup, open }: { followup: Followup; open: FollowupAction | null }) {
+  const removed = followup.kind === 'workspaceRemoved'
+  const options = followupStatusOptions(followup)
+  const disabled = read(busy)
+  return (
+    <Box background="muted" radius="md" padding="sm" direction="column" gap="xs">
+      <Row justify="between" align="center" gap="xs">
+        <Text size="sm" weight="semibold">
+          {t(removed ? 'followup.workspaceRemoved' : 'followup.agentDone', { id: followup.issueId })}
+        </Text>
+        <RelativeTime at={followup.at} muted />
+      </Row>
+      <Text size="xs" muted>
+        {t('followup.workspace', { name: followup.workspaceName })}
+      </Text>
+      {followup.hours === undefined ? null : (
+        <Text size="xs" muted>
+          {t('followup.hoursSeen', { hours: Number(followup.hours.toFixed(2)) })}
+        </Text>
+      )}
+      <Row wrap gap="xs">
+        <Button size="sm" variant="outline" icon="open-external" onPress={() => openIssue(followup.issueId)}>
+          {t('followup.open')}
+        </Button>
+        <Button size="sm" variant="outline" icon="edit" disabled={disabled} onPress={() => startFollowupAction(followup, 'comment')}>
+          {t('followup.comment')}
+        </Button>
+        <Button size="sm" variant="outline" icon="check" disabled={disabled} onPress={() => startFollowupAction(followup, 'status')}>
+          {t(removed ? 'followup.close' : 'followup.status')}
+        </Button>
+        <Button size="sm" variant="outline" icon="calendar" disabled={disabled} onPress={() => startFollowupAction(followup, 'time')}>
+          {t('followup.time')}
+        </Button>
+        <Button size="sm" variant="ghost" icon="close" disabled={disabled} onPress={() => dismissFollowup(followup)}>
+          {t('followup.dismiss')}
+        </Button>
+      </Row>
+      {open === 'comment' ? (
+        <Stack gap="xs">
+          <Textarea
+            label={t('comment.label')}
+            labelHidden
+            placeholder={t('followup.commentPlaceholder')}
+            rows={3}
+            value={read(followupNote)}
+            onChange={(v) => set(followupNote, v)}
+          />
+          <Row justify="end">
+            <Button size="sm" icon="edit" disabled={disabled || !read(followupNote).trim()} onPress={() => commentFollowup(followup)}>
+              {t('followup.commentSubmit')}
+            </Button>
+          </Row>
+        </Stack>
+      ) : null}
+      {open === 'status' ? (
+        options.length === 0 ? (
+          <Text muted size="xs">
+            {t('followup.noClosedStatuses')}
+          </Text>
+        ) : (
+          <Row gap="xs" align="end">
+            <Box grow>
+              <Select
+                label={t('followup.statusLabel')}
+                value={read(followupStatus)}
+                options={options}
+                onChange={(v) => set(followupStatus, v)}
+              />
+            </Box>
+            <Button
+              size="sm"
+              icon="check"
+              disabled={disabled || !read(followupStatus)}
+              onPress={() => statusFollowup(followup)}
+            >
+              {t(removed ? 'followup.closeSubmit' : 'followup.statusSubmit')}
+            </Button>
+          </Row>
+        )
+      ) : null}
+      {open === 'time' ? (
+        <Row gap="xs" align="end">
+          <Box grow>
+            <Input label={t('followup.hours')} placeholder="1.5" value={read(followupHours)} onChange={(v) => set(followupHours, v)} />
+          </Box>
+          <Button
+            size="sm"
+            icon="calendar"
+            disabled={disabled || !read(followupHours).trim()}
+            onPress={() => timeFollowup(followup)}
+          >
+            {t('followup.timeSubmit')}
+          </Button>
+        </Row>
+      ) : null}
+    </Box>
+  )
+}
+
+/** Pending follow-ups at the top of the task list; each opens or completes a task's after-work. */
+function FollowupStrip() {
+  const list = read(followups)
+  if (list.length === 0) return null
+  const open = read(followupAction)
+  return (
+    <Stack gap="sm">
+      <SectionHeader title={t('followup.section')} count={list.length} />
+      {list.map((followup) => (
+        <FollowupCard key={followup.id} followup={followup} open={open?.id === followup.id ? open.action : null} />
+      ))}
+      <Text muted size="xs">
+        {t('followup.hint')}
+      </Text>
+    </Stack>
   )
 }
 
@@ -1223,6 +1423,7 @@ export default function Panel() {
           <Text>{info}</Text>
         </Callout>
       ) : null}
+      {status?.configured ? <FollowupStrip /> : null}
       {status === null ? (
         <Spinner label={t('connecting')} />
       ) : !status.configured ? (

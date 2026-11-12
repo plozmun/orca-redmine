@@ -25,7 +25,20 @@ import {
 import type { ConnectionStatus } from './protocol'
 import { normalizeBaseUrl, projectSubtree, RedmineClient, RedmineError, type IssueDetail } from './redmine'
 import { branchFromTemplate, taskRefFromWorkspace } from './task-ref'
-import { ISSUE_BY_WORKSPACE, PROJECT_BY_ORCA_PROJECT, type AssignedIssue } from './links'
+import { ISSUE_BY_WORKSPACE, PROJECT_BY_ORCA_PROJECT, WORKSPACE_IDS_BY_KEY, type AssignedIssue } from './links'
+import {
+  addFollowup,
+  AgentRunTracker,
+  asAgentNotification,
+  asFollowups,
+  createFollowup,
+  dismissFollowup,
+  FOLLOWUPS_KEY,
+  recordsFollowup,
+  shouldNotify,
+  type AgentTransition,
+  type Followup
+} from './followups'
 
 let orcaLister: () => Promise<OrcaListing> = listOrca
 let orcaCreator: (o: CreateWorktreeOptions) => Promise<CreatedWorktree> = createWorktree
@@ -61,6 +74,7 @@ const COMMENTS_SETTING = 'contextComments'
 const MAX_CHARS_SETTING = 'contextMaxChars'
 const BRANCH_TEMPLATE_SETTING = 'branchTemplate'
 const ON_CREATED_SETTING = 'onWorkspaceCreated'
+const AGENT_NOTIFICATION_SETTING = 'agentNotification'
 /** A hook must answer within 2 s; the Redmine lookup gets this much of it. */
 const HOOK_BUDGET_MS = 1500
 
@@ -219,9 +233,125 @@ async function recordWorkStarted(orca: OrcaWorkerApi, redmine: RedmineClient, is
   orca.panels.post('redmine.issueChanged', { id: issue.id })
 }
 
+// --- Follow-ups: agent finished, workspace removed ---
+
+async function storedFollowups(orca: OrcaWorkerApi): Promise<Followup[]> {
+  return asFollowups(await orca.storage.get(FOLLOWUPS_KEY))
+}
+
+/** Writes the list and tells open panels; follow-ups are the worker's, the panel only shows them. */
+async function saveFollowups(orca: OrcaWorkerApi, followups: Followup[]): Promise<void> {
+  await orca.storage.set(FOLLOWUPS_KEY, followups)
+  orca.panels.post('redmine.followupsChanged', { followups })
+}
+
+async function recordFollowup(
+  orca: OrcaWorkerApi,
+  input: { kind: Followup['kind']; issueId: number; workspaceName: string; at: number; hours?: number }
+): Promise<void> {
+  await saveFollowups(orca, addFollowup(await storedFollowups(orca), createFollowup(input)))
+}
+
+/** The path in an Orca event id shaped `<repoId>::<path>`, else null. */
+function pathFromEventId(workspaceId: string): string | null {
+  const at = workspaceId.indexOf('::')
+  return at === -1 ? null : workspaceId.slice(at + 2) || null
+}
+
+function lastPathSegment(path: string): string {
+  return path.split(/[\\/]/).filter(Boolean).pop() ?? path
+}
+
+/**
+ * Remembers which Orca ids name a linked workspace: `workspace.created` and `agent.status.changed`
+ * use the CLI id (`<repoId>::<path>`) or `identity:<key>`, and `workspace.removed` arrives after the
+ * worktree is gone from the listings, so the path is the only way back to the link key.
+ */
+async function rememberWorkspaceIds(orca: OrcaWorkerApi, key: string, ids: readonly (string | null | undefined)[]): Promise<void> {
+  const map = await readMap<string>(orca, WORKSPACE_IDS_BY_KEY)
+  const next = { ...map }
+  let changed = false
+  for (const id of ids) {
+    if (!id || !id.trim() || next[id] === key) continue
+    next[id] = key
+    changed = true
+  }
+  if (changed) await orca.storage.set(WORKSPACE_IDS_BY_KEY, next)
+}
+
+/** Drops a removed workspace's ids (and anything else still pointing at its key). */
+async function forgetWorkspaceIds(orca: OrcaWorkerApi, key: string | null, ids: readonly (string | null | undefined)[]): Promise<void> {
+  const map = await readMap<string>(orca, WORKSPACE_IDS_BY_KEY)
+  const next = { ...map }
+  let changed = false
+  for (const [alias, value] of Object.entries(next)) {
+    if ((key !== null && value === key) || ids.includes(alias)) {
+      delete next[alias]
+      changed = true
+    }
+  }
+  if (changed) await orca.storage.set(WORKSPACE_IDS_BY_KEY, next)
+}
+
+async function mappedWorkspaceKey(orca: OrcaWorkerApi, workspaceId: string, path?: string | null): Promise<string | null> {
+  const map = await readMap<string>(orca, WORKSPACE_IDS_BY_KEY)
+  const fromId = pathFromEventId(workspaceId)
+  return map[workspaceId] ?? (fromId ? map[fromId] : null) ?? (path ? (map[path] ?? null) : null)
+}
+
+/**
+ * The link key an Orca workspace event names: `identity:<key>` directly, else the alias map, else
+ * the CLI listing while the worktree still exists. Null when the workspace is unknown.
+ */
+async function eventWorkspaceKey(orca: OrcaWorkerApi, workspaceId: string, path?: string | null): Promise<string | null> {
+  const direct = keyFromHostId(workspaceId)
+  if (direct) return direct
+  const mapped = await mappedWorkspaceKey(orca, workspaceId, path)
+  if (mapped) return mapped
+  try {
+    const found = describeWorktree(await orcaLister(), { id: workspaceId })
+    if (found) return found.workspaceKey
+  } catch (error) {
+    orca.log(`workspace event (CLI): ${errorParts(error).errorDetail}`)
+  }
+  return null
+}
+
+/** A workspace's name and path, from the host listing when it knows the workspace, else the CLI. */
+async function workspaceInfoFor(orca: OrcaWorkerApi, workspaceId: string, key: string): Promise<{ name: string; path: string | null }> {
+  if (orca.host.has('workspace.list')) {
+    try {
+      const { workspaces } = (await orca.host.call('workspace.list', {})) as { workspaces: HostWorkspaceRow[] }
+      const row = workspaces.find((w) => w.id === workspaceId) ?? workspaces.find((w) => keyFromHostId(w.id) === key)
+      if (row) return { name: row.name, path: row.path ?? null }
+    } catch (error) {
+      orca.log(`workspace.list: ${errorParts(error).errorDetail}`)
+    }
+  }
+  try {
+    const found = describeWorktree(await orcaLister(), { id: workspaceId, key })
+    if (found?.name) return { name: found.name, path: null }
+  } catch (error) {
+    orca.log(`workspace event (CLI): ${errorParts(error).errorDetail}`)
+  }
+  return { name: key, path: null }
+}
+
+/** A desktop notification naming the task, in the machine's language. Never description text. */
+async function notifyAgent(orca: OrcaWorkerApi, transition: AgentTransition['transition'], issue: AssignedIssue): Promise<void> {
+  const key = transition === 'done' ? 'notification.agentDone' : 'notification.agentBlocked'
+  try {
+    await orca.host.call('notifications.show', { title: translate(systemLocale(), key, { id: issue.id, subject: issue.subject }) })
+  } catch (error) {
+    orca.log(`notifications.show: ${errorParts(error).errorDetail}`)
+  }
+}
+
 export default function activate(orca: OrcaWorkerApi): void {
   /** Workspaces whose work start was already recorded in this run (the event may repeat). */
   const started = new Set<string>()
+  /** First `working` time per pane, for the working time pre-filled when the agent finishes. */
+  const agentRuns = new AgentRunTracker()
 
   // Team branch convention: never refuses a creation, and passes when anything is missing or slow.
   orca.hooks.on('workspace.create.before', async (event, next) => {
@@ -262,12 +392,78 @@ export default function activate(orca: OrcaWorkerApi): void {
         if (!links[key]) await orca.storage.set(ISSUE_BY_WORKSPACE, { ...links, [key]: { id: issue.id, subject: issue.subject } })
         orca.log(`workspace.created: linked ${key} to #${issue.id}`)
       }
+      // Keep the ids Orca's later events (and the removal, when the worktree is gone) may name it by.
+      await rememberWorkspaceIds(orca, key, [workspaceId, path])
       if (started.has(key)) return
       started.add(key)
       await recordWorkStarted(orca, redmine, issue, name, shortBranch(branch))
     } catch (error) {
       orca.log(`workspace.created #${id}: ${errorParts(error).errorDetail}`)
     }
+  })
+
+  // The main agent of a linked workspace finished or needs input: a follow-up (and maybe a
+  // notification). Nothing is written to Redmine here: only the person's actions in the panel are.
+  orca.events.on('agent.status.changed', async (event) => {
+    const change = agentRuns.observe(event)
+    if (!change || !event.workspaceId) return
+    try {
+      const key = await eventWorkspaceKey(orca, event.workspaceId)
+      if (!key) return
+      const linked = (await readMap<AssignedIssue>(orca, ISSUE_BY_WORKSPACE))[key]
+      if (!linked) return
+      const info = await workspaceInfoFor(orca, event.workspaceId, key)
+      await rememberWorkspaceIds(orca, key, [event.workspaceId, info.path])
+      const mode = asAgentNotification(await orca.settings.get(AGENT_NOTIFICATION_SETTING))
+      if (change.transition === 'blocked') {
+        if (shouldNotify(mode, 'blocked')) await notifyAgent(orca, 'blocked', linked)
+        return
+      }
+      // A cancellation, supersede or interruption means the person stopped it and is looking.
+      if (!recordsFollowup(change.outcome)) return
+      await recordFollowup(orca, {
+        kind: 'agentDone',
+        issueId: linked.id,
+        workspaceName: info.name,
+        at: event.receivedAt,
+        ...(change.hours === undefined ? {} : { hours: change.hours })
+      })
+      if (shouldNotify(mode, 'done')) await notifyAgent(orca, 'done', linked)
+    } catch (error) {
+      orca.log(`agent.status.changed: ${errorParts(error).errorDetail}`)
+    }
+  })
+
+  // A linked worktree went away: its link would otherwise stay forever and the task never gets closed.
+  orca.events.on('workspace.removed', async ({ workspaceId, kind, path }) => {
+    if (kind !== 'worktree') return
+    try {
+      const key = await eventWorkspaceKey(orca, workspaceId, path)
+      await forgetWorkspaceIds(orca, key, [workspaceId, path])
+      if (!key) return
+      const links = await readMap<AssignedIssue>(orca, ISSUE_BY_WORKSPACE)
+      const linked = links[key]
+      if (!linked) return
+      const next = { ...links }
+      delete next[key]
+      await orca.storage.set(ISSUE_BY_WORKSPACE, next)
+      await recordFollowup(orca, {
+        kind: 'workspaceRemoved',
+        issueId: linked.id,
+        workspaceName: lastPathSegment(path ?? key),
+        at: Date.now()
+      })
+    } catch (error) {
+      orca.log(`workspace.removed: ${errorParts(error).errorDetail}`)
+    }
+  })
+
+  orca.panels.handle('redmine.followups.get', async () => ({ followups: await storedFollowups(orca) }))
+
+  orca.panels.handle('redmine.followups.dismiss', async ({ id }) => {
+    const followups = dismissFollowup(await storedFollowups(orca), id)
+    await saveFollowups(orca, followups)
+    return { followups }
   })
 
   orca.panels.handle('redmine.status', () => status(orca))

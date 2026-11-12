@@ -1,6 +1,10 @@
 // Minimal Redmine REST API client. Only the worker (Node) uses it: panels have no network.
 // It does not depend on Orca, so tests drive it with a fake `fetch`.
 
+import { localDateDaysAgo } from './days'
+
+export { localDateDaysAgo }
+
 export interface IssueSummary {
   id: number
   subject: string
@@ -106,20 +110,6 @@ export interface IssuePriority {
   name: string
   /** Some Redmine instances answer with it; the stock API does not. */
   isDefault?: boolean
-}
-
-/** `YYYY-MM-DD` for `at` in local time: Redmine due dates are days, not instants. */
-function localDate(at: Date): string {
-  const month = String(at.getMonth() + 1).padStart(2, '0')
-  return `${at.getFullYear()}-${month}-${String(at.getDate()).padStart(2, '0')}`
-}
-
-/**
- * `YYYY-MM-DD` for the day `days` before `at`, in local time. Calendar arithmetic, not milliseconds,
- * so a change of daylight saving time does not shift the day.
- */
-export function localDateDaysAgo(days: number, at: Date = new Date()): string {
-  return localDate(new Date(at.getFullYear(), at.getMonth(), at.getDate() - days))
 }
 
 /**
@@ -351,10 +341,11 @@ export class RedmineClient {
     await this.call('PUT', `/issues/${id}.json`, { issue })
   }
 
-  async logTime(id: number, hours: number, comments: string): Promise<number> {
-    const { time_entry } = await this.call('POST', '/time_entries.json', {
-      time_entry: { issue_id: id, hours, comments }
-    })
+  /** `spentOn` is a local `YYYY-MM-DD` day; without it Redmine books today. */
+  async logTime(id: number, hours: number, comments: string, spentOn?: string): Promise<number> {
+    const entry: Record<string, unknown> = { issue_id: id, hours, comments }
+    if (spentOn) entry.spent_on = spentOn
+    const { time_entry } = await this.call('POST', '/time_entries.json', { time_entry: entry })
     return time_entry.id
   }
 

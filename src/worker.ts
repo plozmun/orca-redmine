@@ -26,6 +26,7 @@ import {
 } from './orca-workspaces'
 import { contextFilePrompt, fitsLaunchPrompt } from './launch-here'
 import type { ConnectionStatus } from './protocol'
+import { isBookableDay } from './days'
 import { normalizeBaseUrl, projectSubtree, RedmineClient, RedmineError, type IssueDetail, type OpenCounts } from './redmine'
 import { branchFromTemplate, taskRefFromWorkspace } from './task-ref'
 import { ISSUE_BY_WORKSPACE, PROJECT_BY_ORCA_PROJECT, WORKSPACE_IDS_BY_KEY, type AssignedIssue } from './links'
@@ -177,7 +178,10 @@ function statusBarTooltip(locale: string, counts: OpenCounts): string {
  * connection; a failed refresh shows the reason instead of a stale count. Never throws, and a
  * missing status bar (the web client) only logs: no panel request may fail for it.
  */
-async function refreshStatusBar(orca: OrcaWorkerApi): Promise<void> {
+/** How long the list header reuses the last count before asking Redmine again. */
+const COUNTS_MAX_AGE_MS = 60_000
+
+async function refreshStatusBar(orca: OrcaWorkerApi, onCounts: (counts: OpenCounts) => void): Promise<void> {
   const locale = systemLocale()
   let update: { text?: string; tone?: 'neutral' | 'warning' | 'danger'; tooltip?: string; visible: boolean }
   try {
@@ -186,6 +190,7 @@ async function refreshStatusBar(orca: OrcaWorkerApi): Promise<void> {
       update = { visible: false }
     } else {
       const counts = await (await client(orca)).openCounts()
+      onCounts(counts)
       update = {
         text: String(counts.total),
         tone: statusBarTone(counts),
@@ -489,6 +494,14 @@ export default function activate(orca: OrcaWorkerApi): void {
   /** First `working` time per pane, for the working time pre-filled when the agent finishes. */
   const agentRuns = new AgentRunTracker()
 
+  // The last count of my tasks, shared by the status bar and the list header's tiles. Panels hear
+  // every new count, so a refresh for the status bar also updates an open list.
+  let lastCounts: { counts: OpenCounts; at: number } | null = null
+  const rememberCounts = (counts: OpenCounts): void => {
+    lastCounts = { counts, at: Date.now() }
+    orca.panels.post('redmine.countsChanged', counts)
+  }
+
   // Status bar: one refresh at a time, whether a panel change or the interval asked for it, so a
   // slow Redmine is not asked twice for the same count.
   let refreshing: Promise<void> | null = null
@@ -499,7 +512,7 @@ export default function activate(orca: OrcaWorkerApi): void {
       if (afterChange) refreshAgain = true
       return refreshing
     }
-    refreshing = refreshStatusBar(orca).finally(() => {
+    refreshing = refreshStatusBar(orca, rememberCounts).finally(() => {
       refreshing = null
       if (refreshAgain) {
         refreshAgain = false
@@ -508,8 +521,14 @@ export default function activate(orca: OrcaWorkerApi): void {
     })
     return refreshing
   }
-  /** After a change made from the panel: the panel's answer never waits for the count. */
-  const refreshSoon = (): void => void refreshOnce(true)
+  /**
+   * After a change made from the panel: the panel's answer never waits for the count. The cached
+   * count is dropped, so the list header asks again even with the status bar turned off.
+   */
+  const refreshSoon = (): void => {
+    lastCounts = null
+    void refreshOnce(true)
+  }
   /**
    * Refreshes the item now and again after `statusBarMinutes` (re-read on every tick, so a change in
    * Settings applies at the next one). The next tick is armed before the refresh: a slow Redmine
@@ -749,12 +768,21 @@ export default function activate(orca: OrcaWorkerApi): void {
     return redmine.getIssue(id)
   })
 
-  orca.panels.handle('redmine.logTime', async ({ id, hours, comments }) => {
+  orca.panels.handle('redmine.logTime', async ({ id, hours, comments, spentOn }) => {
     if (!(hours > 0 && hours <= 24)) throw new RedmineError('invalid_hours', `hours=${hours}`)
-    const timeEntryId = await (await client(orca)).logTime(id, hours, comments)
+    if (spentOn !== undefined && !isBookableDay(spentOn)) throw new RedmineError('invalid_day', `spentOn=${spentOn}`)
+    const timeEntryId = await (await client(orca)).logTime(id, hours, comments, spentOn)
     orca.panels.post('redmine.issueChanged', { id })
     refreshSoon()
     return { timeEntryId }
+  })
+
+  // A count younger than a minute is reused: the list asks on every reload.
+  orca.panels.handle('redmine.counts', async () => {
+    if (lastCounts && Date.now() - lastCounts.at < COUNTS_MAX_AGE_MS) return lastCounts.counts
+    const counts = await (await client(orca)).openCounts()
+    rememberCounts(counts)
+    return counts
   })
 
   orca.panels.handle('redmine.timeEntries', async ({ id }) => (await client(orca)).myTimeEntries(id))

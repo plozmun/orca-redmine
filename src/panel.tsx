@@ -7,13 +7,13 @@ import {
   Box,
   Button,
   Callout,
-  Card,
-  Collapsible,
   EmptyState,
   Field,
+  Grid,
   env,
   Heading,
   IconButton,
+  Image,
   Input,
   Link,
   List,
@@ -21,6 +21,8 @@ import {
   Markdown,
   on,
   plugin,
+  Progress,
+  RadioGroup,
   read,
   RelativeTime,
   Row,
@@ -49,7 +51,8 @@ import { textileToMarkdown } from './textile'
 import { ISSUE_BY_WORKSPACE, LINKS_MIGRATED, PROJECT_BY_ORCA_PROJECT, type AssignedIssue } from './links'
 import { taskRefFromWorkspace } from './task-ref'
 import type { Followup } from './followups'
-import { type IssueDetail, type IssueStatus, type IssueSummary, type Project, type TimeEntry } from './redmine'
+import { isBookableDay, localDateDaysAgo, recentDays } from './days'
+import { type IssueDetail, type IssueStatus, type IssueSummary, type OpenCounts, type Project, type TimeEntry } from './redmine'
 
 function t(key: MessageKey, vars?: Record<string, string | number>): string {
   return translate(env.locale, key, vars)
@@ -83,12 +86,16 @@ const statuses = atom<IssueStatus[]>([])
 const projects = atom<Project[]>([])
 /** Pending follow-ups the worker recorded: agents that finished, linked workspaces removed. */
 const followups = atom<Followup[]>([])
+/** My open, overdue and urgent tasks, for the tiles above the list; null until the worker answers. */
+const counts = atom<OpenCounts | null>(null)
 /** The action form open on one follow-up, if any. */
 type FollowupAction = 'comment' | 'status' | 'time'
 const followupAction = atom<{ id: string; action: FollowupAction } | null>(null)
 const followupNote = atom('')
 const followupHours = atom('')
 const followupStatus = atom('')
+const followupDay = atom('')
+const followupOtherDay = atom('')
 const detail = atom<IssueDetail | null>(null)
 const workspace = atom<WorkspaceInfo | null>(null)
 const busy = atom(false)
@@ -167,7 +174,12 @@ const launchComments = atom<CommentsMode>('recent')
 /** Whether this Orca can start an agent in a workspace (`agent.launch`); null until the worker says. */
 const launchHereAvailable = atom<boolean | null>(null)
 /** "Launch agent here" stays open once the person opens it, like the other sections keep their place. */
-const hereOpen = atom('redmine.hereOpen', false, { persist: 'plugin' })
+type AgentSheet = 'launch' | 'send'
+/** Which agent form is open under the detail's two buttons, if any; remembered between sessions. */
+const agentSheet = atom<AgentSheet | null>('redmine.agentSheet', null, { persist: 'plugin' })
+type LaunchWhere = 'new' | 'here'
+/** Where "Launch agent" starts the agent: in a new workspace or the focused one. */
+const launchWhere = atom<LaunchWhere>('redmine.launchWhere', 'new', { persist: 'plugin' })
 
 // Plugin settings (Settings → Plugins → Redmine), read once and kept current.
 const instructionsTemplate = atom<string | null>(null)
@@ -191,6 +203,9 @@ const editingUrl = atom(false)
 const terminalId = atom('')
 const hours = atom('')
 const timeComment = atom('')
+/** The day to book: '' is today, OTHER_DAY reads `timeOtherDay`. */
+const timeDay = atom('')
+const timeOtherDay = atom('')
 const note = atom('')
 
 function currentProject(): string | null {
@@ -257,10 +272,20 @@ async function loadIssues(): Promise<void> {
     })
     set(issues, answer.issues)
     set(total, answer.total)
+    void loadCounts()
   } catch (e) {
     set(error, errorText(e))
   } finally {
     set(loading, false)
+  }
+}
+
+/** The tiles are secondary: when the count fails, they just stay hidden. */
+async function loadCounts(): Promise<void> {
+  try {
+    set(counts, await plugin.request('redmine.counts'))
+  } catch {
+    set(counts, null)
   }
 }
 
@@ -375,9 +400,13 @@ function logTime(issue: IssueDetail): Promise<void> {
   return run(async () => {
     const value = Number(read(hours).replace(',', '.'))
     if (!Number.isFinite(value) || value <= 0) throw panelError('need_hours')
-    await plugin.request('redmine.logTime', { id: issue.id, hours: value, comments: read(timeComment) })
+    const spentOn = chosenDay(timeDay, timeOtherDay)
+    if (!spentOn) throw panelError('invalid_day')
+    await plugin.request('redmine.logTime', { id: issue.id, hours: value, comments: read(timeComment), spentOn })
     set(hours, '')
     set(timeComment, '')
+    set(timeDay, '')
+    set(timeOtherDay, '')
     set(notice, t('time.done', { hours: value, id: issue.id }))
     await loadTimeEntries(issue.id)
   })
@@ -402,7 +431,11 @@ function followupStatusOptions(followup: Followup): { value: string; label: stri
 
 function startFollowupAction(followup: Followup, action: FollowupAction): void {
   if (action === 'comment') set(followupNote, '')
-  if (action === 'time') set(followupHours, followup.hours === undefined ? '' : String(followup.hours))
+  if (action === 'time') {
+    set(followupHours, followup.hours === undefined ? '' : String(followup.hours))
+    set(followupDay, '')
+    set(followupOtherDay, '')
+  }
   if (action === 'status') set(followupStatus, followupStatusOptions(followup)[0]?.value ?? '')
   set(followupAction, { id: followup.id, action })
 }
@@ -445,7 +478,9 @@ function timeFollowup(followup: Followup): Promise<void> {
   return run(async () => {
     const value = Number(read(followupHours).replace(',', '.'))
     if (!Number.isFinite(value) || value <= 0) throw panelError('need_hours')
-    await plugin.request('redmine.logTime', { id: followup.issueId, hours: value, comments: '' })
+    const spentOn = chosenDay(followupDay, followupOtherDay)
+    if (!spentOn) throw panelError('invalid_day')
+    await plugin.request('redmine.logTime', { id: followup.issueId, hours: value, comments: '', spentOn })
     set(followupHours, '')
     await completeFollowup(followup)
     set(notice, t('time.done', { hours: value, id: followup.issueId }))
@@ -597,6 +632,7 @@ export function setup(ctx: PanelContext): void {
   ctx.subscriptions.push(
     plugin.on('redmine.followupsChanged', ({ followups: next }) => set(followups, next))
   )
+  ctx.subscriptions.push(plugin.on('redmine.countsChanged', (next) => set(counts, next)))
   void loadFollowups()
   void loadSettings()
   ctx.subscriptions.push(
@@ -885,19 +921,22 @@ function FollowupCard({ followup, open }: { followup: Followup; open: FollowupAc
         )
       ) : null}
       {open === 'time' ? (
-        <Row gap="xs" align="end">
-          <Box grow>
+        <Stack gap="xs">
+          <Grid columns={2} gap="xs">
             <Input label={t('followup.hours')} placeholder="1.5" value={read(followupHours)} onChange={(v) => set(followupHours, v)} />
-          </Box>
-          <Button
-            size="sm"
-            icon="calendar"
-            disabled={disabled || !read(followupHours).trim()}
-            onPress={() => timeFollowup(followup)}
-          >
-            {t('followup.timeSubmit')}
-          </Button>
-        </Row>
+            <DayPicker day={followupDay} other={followupOtherDay} />
+          </Grid>
+          <Row justify="end">
+            <Button
+              size="sm"
+              icon="calendar"
+              disabled={disabled || !read(followupHours).trim() || chosenDay(followupDay, followupOtherDay) === null}
+              onPress={() => timeFollowup(followup)}
+            >
+              {t('followup.timeSubmit')}
+            </Button>
+          </Row>
+        </Stack>
       ) : null}
     </Box>
   )
@@ -1062,6 +1101,35 @@ function IssueRow({ issue, assigned, options }: { issue: IssueSummary; assigned:
   )
 }
 
+/** One count above the list: the number large, in its tone when it is not zero, the label small. */
+function StatTile({ value, label, tone }: { value: number; label: string; tone?: 'warning' | 'danger' }) {
+  return (
+    <Box border radius="md" background="card" paddingX="sm" paddingY="xs" direction="column" gap="none">
+      <Heading level={3}>
+        <Text weight="semibold" tone={value > 0 ? tone : undefined}>
+          {String(value)}
+        </Text>
+      </Heading>
+      <Text size="xs" muted truncate>
+        {label.toLocaleUpperCase(env.locale)}
+      </Text>
+    </Box>
+  )
+}
+
+/** My open, overdue and urgent tasks, whatever the list below is filtered by. */
+function StatTiles() {
+  const c = read(counts)
+  if (!c) return null
+  return (
+    <Grid columns={3} gap="xs">
+      <StatTile value={c.total} label={t('stats.open')} />
+      <StatTile value={c.overdue} label={t('stats.overdue')} tone="warning" />
+      <StatTile value={c.urgent} label={t('stats.urgent')} tone="danger" />
+    </Grid>
+  )
+}
+
 function IssueList() {
   const assigned = assignedIssue()
   const list = read(issues)
@@ -1072,6 +1140,7 @@ function IssueList() {
   }
   return (
     <Stack gap="sm">
+      <StatTiles />
       <Input
         label={t('list.search')}
         labelHidden
@@ -1081,18 +1150,24 @@ function IssueList() {
         onChange={(v) => set(search, v)}
         onSubmit={() => loadIssues()}
       />
+      <RadioGroup
+        label={t('list.scope')}
+        labelHidden
+        orientation="horizontal"
+        value={read(onlyMine) ? 'mine' : 'all'}
+        options={[
+          { value: 'mine', label: t('list.scopeMine') },
+          { value: 'all', label: t('list.scopeAll') }
+        ]}
+        onChange={(v) => {
+          set(onlyMine, v === 'mine')
+          void loadIssues()
+        }}
+      />
       {/* Filters in one quiet card, label on the left and value on the right, as Orca's sidebars. */}
       <Box background="muted" radius="md" paddingX="sm" paddingY="xs" direction="column" gap="xs">
         <WorkspaceBar />
         <StatusPicker />
-        <Switch
-          label={t('list.onlyMine')}
-          checked={read(onlyMine)}
-          onChange={(v) => {
-            set(onlyMine, v)
-            void loadIssues()
-          }}
-        />
       </Box>
       <SectionHeader
         title={t('section.tasks')}
@@ -1117,10 +1192,9 @@ function IssueList() {
   )
 }
 
-function LaunchSection({ issue }: { issue: IssueDetail }) {
+function LaunchForm({ issue }: { issue: IssueDetail }) {
   const noAgent = read(launchAgent) === NO_AGENT
   return (
-    <Collapsible title={t('launch.title')}>
       <Stack gap="sm">
         <Text muted size="xs">
           {t('launch.subtitle')}
@@ -1193,7 +1267,6 @@ function LaunchSection({ issue }: { issue: IssueDetail }) {
           {t('launch.settingsHint')}
         </Text>
       </Stack>
-    </Collapsible>
   )
 }
 
@@ -1202,16 +1275,11 @@ function LaunchSection({ issue }: { issue: IssueDetail }) {
  * instructions and context a new-workspace launch gets. Disabled without a workspace or when the
  * host cannot start agents; both say why.
  */
-function HereSection({ issue }: { issue: IssueDetail }) {
+function HereForm({ issue }: { issue: IssueDetail }) {
   const available = read(launchHereAvailable)
   const ws = read(workspace)
   const agent = read(launchAgent) === NO_AGENT ? AGENTS[0].value : read(launchAgent)
   return (
-    <Collapsible
-      title={t('here.title')}
-      open={read(hereOpen)}
-      onChange={(open) => set(hereOpen, open)}
-    >
       <Stack gap="sm">
         <Text muted size="xs">
           {t('here.subtitle')}
@@ -1250,9 +1318,120 @@ function HereSection({ issue }: { issue: IssueDetail }) {
           </Text>
         )}
       </Stack>
-    </Collapsible>
   )
 }
+
+/** "Send to terminal": types the task prompt into a terminal of the focused workspace. */
+function SendForm({ issue }: { issue: IssueDetail }) {
+  const ws = read(workspace)
+  return (
+    <Stack gap="sm">
+      <Text muted size="xs">
+        {t('send.subtitle')}
+      </Text>
+      {ws && ws.terminals.length > 0 ? (
+        <Select
+          label={t('send.terminal')}
+          value={read(terminalId)}
+          options={ws.terminals.map((term) => ({ value: term.id, label: term.title ?? term.id }))}
+          onChange={(v) => set(terminalId, v)}
+        />
+      ) : (
+        <Text muted size="xs">
+          {t('send.noTerminals')}
+        </Text>
+      )}
+      <Button icon="agent" disabled={read(busy) || !ws?.terminals.length} onPress={() => sendToAgent(issue)}>
+        {t('send.submit')}
+      </Button>
+    </Stack>
+  )
+}
+
+/**
+ * The open agent form, drawn as a sheet under the two buttons (components panels have no popups):
+ * a bordered card with its title and a close button.
+ */
+function AgentSheetView({ issue, sheet }: { issue: IssueDetail; sheet: AgentSheet }) {
+  const where = read(launchWhere)
+  const title = sheet === 'send' ? t('send.title') : where === 'here' ? t('here.title') : t('launch.title')
+  return (
+    <Box border radius="md" background="card" padding="sm" direction="column" gap="sm">
+      <Row justify="between" align="center" gap="xs">
+        <Text size="sm" weight="semibold">
+          {title}
+        </Text>
+        <IconButton icon="close" size="xs" variant="ghost" label={t('agent.close')} onPress={() => set(agentSheet, null)} />
+      </Row>
+      {sheet === 'launch' ? (
+        <RadioGroup
+          label={t('agent.where')}
+          labelHidden
+          orientation="horizontal"
+          value={where}
+          options={[
+            { value: 'new', label: t('agent.whereNew') },
+            { value: 'here', label: t('agent.whereHere') }
+          ]}
+          onChange={(v) => set(launchWhere, v === 'here' ? 'here' : 'new')}
+        />
+      ) : null}
+      {sheet === 'send' ? <SendForm issue={issue} /> : where === 'here' ? <HereForm issue={issue} /> : <LaunchForm issue={issue} />}
+    </Box>
+  )
+}
+
+/** The day picker's last choice: type a date. */
+const OTHER_DAY = 'other'
+
+/** The day a time entry goes to, or null while a typed date is not a bookable day. */
+function chosenDay(day: Atom<string>, other: Atom<string>): string | null {
+  const value = read(day)
+  if (value === OTHER_DAY) {
+    const typed = read(other).trim()
+    return isBookableDay(typed) ? typed : null
+  }
+  return value || localDateDaysAgo(0)
+}
+
+function dayOptionLabel(day: string, index: number): string {
+  if (index === 0) return t('time.today')
+  if (index === 1) return t('time.yesterday')
+  try {
+    return new Date(`${day}T00:00:00`).toLocaleDateString(env.locale, { weekday: 'short', day: 'numeric', month: 'short' })
+  } catch {
+    return day
+  }
+}
+
+/** Today, yesterday, the five days before, or a typed date (checked as it is typed). */
+function DayPicker({ day, other }: { day: Atom<string>; other: Atom<string> }) {
+  const days = recentDays()
+  const value = read(day) || days[0]
+  const typed = read(other).trim()
+  return (
+    <Stack gap="xs">
+      <Select
+        label={t('time.day')}
+        value={value}
+        options={[...days.map((d, i) => ({ value: d, label: dayOptionLabel(d, i) })), { value: OTHER_DAY, label: t('time.otherDay') }]}
+        onChange={(v) => set(day, v)}
+      />
+      {value === OTHER_DAY ? (
+        <Input
+          label={t('time.otherDayLabel')}
+          placeholder={localDateDaysAgo(RECENT_PLACEHOLDER_DAYS)}
+          value={read(other)}
+          invalid={typed !== '' && !isBookableDay(typed)}
+          onChange={(v) => set(other, v)}
+        />
+      ) : null}
+    </Stack>
+  )
+}
+
+/** The typed-date placeholder shows a day just before the ones the picker lists. */
+const RECENT_PLACEHOLDER_DAYS = 10
 
 function hoursText(hours: number): string {
   return t('time.hours.value', { hours: Number(hours.toFixed(2)) })
@@ -1275,22 +1454,25 @@ function TimeTab({ issue }: { issue: IssueDetail }) {
   const totalHours = (entries ?? []).reduce((sum, e) => sum + e.hours, 0)
   return (
     <Stack gap="sm">
-      <Box background="muted" radius="md" padding="sm" direction="column" gap="sm">
-        <Row gap="sm" align="end">
-          <Box grow>
-            <Input label={t('time.hours')} placeholder="1.5" value={read(hours)} onChange={(v) => set(hours, v)} />
-          </Box>
-          <Box grow>
-            <Input
-              label={t('time.comment')}
-              value={read(timeComment)}
-              onChange={(v) => set(timeComment, v)}
-              onSubmit={() => logTime(issue)}
-            />
-          </Box>
-        </Row>
+      <Box border radius="md" padding="sm" direction="column" gap="sm">
+        <Grid columns={2} gap="sm">
+          <Input label={t('time.hours')} placeholder="1.5" value={read(hours)} onChange={(v) => set(hours, v)} />
+          <DayPicker day={timeDay} other={timeOtherDay} />
+        </Grid>
+        <Input
+          label={t('time.comment')}
+          value={read(timeComment)}
+          onChange={(v) => set(timeComment, v)}
+          onSubmit={() => logTime(issue)}
+        />
         <Row justify="end">
-          <Button size="sm" icon="calendar" disabled={read(busy) || !read(hours).trim()} onPress={() => logTime(issue)}>
+          <Button
+            size="sm"
+            variant="solid"
+            icon="calendar"
+            disabled={read(busy) || !read(hours).trim() || chosenDay(timeDay, timeOtherDay) === null}
+            onPress={() => logTime(issue)}
+          >
             {t('time.submit')}
           </Button>
         </Row>
@@ -1346,23 +1528,28 @@ function DetailRow({ label, children }: { label: string; children: unknown }) {
 }
 
 function IssueView({ issue }: { issue: IssueDetail }) {
-  const ws = read(workspace)
   const disabled = read(busy)
   const assigned = assignedIssue()
   const isWorkspaceTask = assigned?.id === issue.id
   const urgent = URGENT_PRIORITY.test(issue.priority)
+  const sheet = read(agentSheet)
+  const toggleSheet = (next: AgentSheet) => set(agentSheet, sheet === next ? null : next)
   return (
     <Stack gap="md">
-      {/* Header, like Orca's Checks panel: number and state, title, then a muted meta line. */}
-      <Stack gap="xs">
-        <Row justify="between" align="center">
-          <Row gap="xs" align="center">
-            <Button variant="ghost" size="xs" onPress={closeIssue}>
-              {t('issue.back')}
-            </Button>
-            <Text size="sm" weight="semibold">{`#${issue.id}`}</Text>
-            <Badge tone={statusTone(issue.status)}>{issue.status}</Badge>
-          </Row>
+      {/* Header: back, number and tracker on the left; status, reload and Redmine on the right. */}
+      <Row justify="between" align="center" gap="xs">
+        <Row gap="xs" align="center">
+          <Button variant="outline" size="xs" onPress={closeIssue}>
+            {t('issue.back')}
+          </Button>
+          <Text size="sm" weight="semibold" tone="accent">{`#${issue.id}`}</Text>
+          <Text size="xs" muted truncate>
+            {issue.tracker}
+          </Text>
+        </Row>
+        <Row gap="none" align="center">
+          <Badge tone={statusTone(issue.status)}>{issue.status}</Badge>
+          <IconButton icon="refresh" size="sm" variant="ghost" label={t('header.reload')} onPress={() => openIssue(issue.id)} />
           <IconButton
             icon="open-external"
             size="sm"
@@ -1371,50 +1558,57 @@ function IssueView({ issue }: { issue: IssueDetail }) {
             onPress={() => shell.openExternal(issue.url)}
           />
         </Row>
-        <Text size="sm" weight="semibold">
-          {issue.subject}
-        </Text>
-        <Text muted size="xs">
-          {`${issue.tracker} · ${t('issue.updated')} `}
-          <RelativeTime at={Date.parse(issue.updatedOn) || Date.now()} />
-        </Text>
-      </Stack>
+      </Row>
 
-      <Stack gap="xs">
-        <DetailRow label={t('issue.project')}>
-          <Text size="xs" truncate>
-            {issue.project}
+      {/* The task card: title, when it changed, its fields and progress. */}
+      <Box border radius="md" background="card" padding="sm" direction="column" gap="sm">
+        <Stack gap="none">
+          <Text size="sm" weight="semibold">
+            {issue.subject}
           </Text>
-        </DetailRow>
-        <DetailRow label={t('issue.assignee')}>
-          <Text size="xs" truncate>
-            {issue.assignee ?? t('issue.unassigned')}
+          <Text muted size="xs">
+            {`${t('issue.updated')} `}
+            <RelativeTime at={Date.parse(issue.updatedOn) || Date.now()} />
           </Text>
-        </DetailRow>
-        <DetailRow label={t('issue.priority')}>
-          {urgent ? <Badge tone="warning">{issue.priority}</Badge> : <Text size="xs">{issue.priority}</Text>}
-        </DetailRow>
-        <DetailRow label={t('issue.done')}>
-          <Text size="xs">{`${issue.doneRatio}%`}</Text>
-        </DetailRow>
-      </Stack>
-
-      {read(statuses).length > 0 ? (
-        <Select
-          label={t('issue.status')}
-          labelHidden
-          value={String(issue.statusId)}
-          options={read(statuses).map((s) => ({ value: String(s.id), label: s.name }))}
-          disabled={disabled}
-          onChange={(v) => changeStatus(issue, v)}
-        />
-      ) : null}
+        </Stack>
+        <Stack gap="xs">
+          <DetailRow label={t('issue.project')}>
+            <Text size="xs" truncate>
+              {issue.project}
+            </Text>
+          </DetailRow>
+          <DetailRow label={t('issue.assignee')}>
+            <Text size="xs" truncate>
+              {issue.assignee ?? t('issue.unassigned')}
+            </Text>
+          </DetailRow>
+          <DetailRow label={t('issue.priority')}>
+            {urgent ? <Badge tone="warning">{issue.priority}</Badge> : <Text size="xs">{issue.priority}</Text>}
+          </DetailRow>
+          <DetailRow label={t('issue.done')}>
+            <Stack gap="xs">
+              <Text size="xs">{`${issue.doneRatio}%`}</Text>
+              <Progress label={t('issue.done')} labelHidden value={issue.doneRatio} />
+            </Stack>
+          </DetailRow>
+        </Stack>
+        {read(statuses).length > 0 ? (
+          <Select
+            label={t('issue.status')}
+            labelHidden
+            value={String(issue.statusId)}
+            options={read(statuses).map((s) => ({ value: String(s.id), label: s.name }))}
+            disabled={disabled}
+            onChange={(v) => changeStatus(issue, v)}
+          />
+        ) : null}
+      </Box>
 
       {read(located) ? (
         isWorkspaceTask ? (
           <Row justify="between" align="center" gap="xs">
             <Badge tone="success">{t('issue.isWorkspaceTask')}</Badge>
-            <Button size="sm" variant="ghost" onPress={() => assignIssue(null)}>
+            <Button size="xs" variant="ghost" onPress={() => assignIssue(null)}>
               {t('issue.unassign')}
             </Button>
           </Row>
@@ -1425,38 +1619,22 @@ function IssueView({ issue }: { issue: IssueDetail }) {
         )
       ) : null}
 
-      <Separator />
-      <Stack gap="xs">
-        <SectionHeader title={t('section.agent')} />
+      {/* The agent actions: two buttons, each opening its form as a sheet underneath. */}
+      <Stack gap="sm">
+        <Grid columns={2} gap="sm">
+          <Button variant="solid" icon="play" onPress={() => toggleSheet('launch')}>
+            {t('agent.launch')}
+          </Button>
+          <Button variant="outline" icon="terminal" onPress={() => toggleSheet('send')}>
+            {t('agent.send')}
+          </Button>
+        </Grid>
         {read(redmineCli) === null ? (
           <Text muted size="xs">
             {t('agent.noCli')}
           </Text>
         ) : null}
-        <LaunchSection issue={issue} />
-        <HereSection issue={issue} />
-        <Collapsible title={t('send.title')}>
-          <Stack gap="sm">
-            <Text muted size="xs">
-              {t('send.subtitle')}
-            </Text>
-            {ws && ws.terminals.length > 0 ? (
-              <Select
-                label={t('send.terminal')}
-                value={read(terminalId)}
-                options={ws.terminals.map((term) => ({ value: term.id, label: term.title ?? term.id }))}
-                onChange={(v) => set(terminalId, v)}
-              />
-            ) : (
-              <Text muted size="xs">
-                {t('send.noTerminals')}
-              </Text>
-            )}
-            <Button icon="agent" disabled={disabled || !ws?.terminals.length} onPress={() => sendToAgent(issue)}>
-              {t('send.submit')}
-            </Button>
-          </Stack>
-        </Collapsible>
+        {sheet ? <AgentSheetView issue={issue} sheet={sheet} /> : null}
       </Stack>
 
       <Tabs label={t('tabs.label')} value={read(detailTab)} onChange={(v) => set(detailTab, asDetailTab(v))}>
@@ -1516,6 +1694,45 @@ function IssueView({ issue }: { issue: IssueDetail }) {
   )
 }
 
+/** The server without its scheme, as the header's second line shows it. */
+function hostOf(url: string | undefined): string {
+  return (url ?? '').replace(/^https?:\/\//, '').replace(/\/$/, '')
+}
+
+/** Logo, "Redmine", then the server and the connected user; refresh and connection on the right. */
+function ListHeader({ status }: { status: ConnectionStatus }) {
+  const user = status.user ? status.user.name || status.user.login : null
+  const line = [hostOf(status.url ?? undefined), user].filter(Boolean).join(' · ')
+  return (
+    <Row justify="between" align="center" gap="sm">
+      <Row gap="sm" align="center">
+        <Image src="assets/icon.png" alt="" size="xs" rounded />
+        <Stack gap="none">
+          <Text size="sm" weight="semibold">
+            {t('header.title')}
+          </Text>
+          {line ? (
+            <Text size="xs" muted truncate>
+              {line}
+            </Text>
+          ) : null}
+        </Stack>
+      </Row>
+      <Row gap="xs" align="center">
+        <IconButton icon="refresh" size="sm" variant="outline" label={t('header.reload')} onPress={() => loadIssues()} />
+        <IconButton
+          key="connection"
+          icon="plug"
+          size="sm"
+          label={t('header.connection')}
+          variant="outline"
+          onPress={() => update(confirmingDisconnect, (open) => !open)}
+        />
+      </Row>
+    </Row>
+  )
+}
+
 /** Disconnecting deletes the API key, so it takes a second, explicit press. */
 function DisconnectConfirm({ status }: { status: ConnectionStatus }) {
   const user = status.user ? status.user.name || status.user.login : '?'
@@ -1543,37 +1760,7 @@ export default function Panel() {
   const info = read(notice)
   return (
     <Stack gap="md">
-      {status?.configured ? (
-        <Row justify="between" align="center">
-          <Row gap="xs" align="center">
-            <Text size="sm" weight="semibold">
-              {t('header.title')}
-            </Text>
-            {status.user ? (
-              <Text size="sm" muted truncate>
-                {status.user.name || status.user.login}
-              </Text>
-            ) : null}
-          </Row>
-          <Row gap="none" align="center">
-            <IconButton
-              icon="refresh"
-              size="sm"
-              variant="ghost"
-              label={t('header.reload')}
-              onPress={() => (current ? openIssue(current.id) : loadIssues())}
-            />
-            <IconButton
-              key="connection"
-              icon="plug"
-              size="sm"
-              label={t('header.connection')}
-              variant="ghost"
-              onPress={() => update(confirmingDisconnect, (open) => !open)}
-            />
-          </Row>
-        </Row>
-      ) : null}
+      {status?.configured && !current ? <ListHeader status={status} /> : null}
       {status?.configured && read(confirmingDisconnect) ? <DisconnectConfirm status={status} /> : null}
       {err ? (
         <Callout tone="danger" icon="error">

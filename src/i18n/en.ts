@@ -25,7 +25,6 @@ export const en = {
 
   // Section headers
   'section.tasks': 'Tasks',
-  'section.agent': 'Agent',
 
   // Workspace card
   'workspace.none': 'No focused workspace: showing tasks from every project.',
@@ -50,7 +49,12 @@ export const en = {
   // Issue list
   'list.search': 'Search',
   'list.searchPlaceholder': 'Subject or #number',
-  'list.onlyMine': 'Only assigned to me',
+  'list.scope': 'Which tasks',
+  'list.scopeMine': 'Mine',
+  'list.scopeAll': 'Everyone’s',
+  'stats.open': 'Open',
+  'stats.overdue': 'Overdue',
+  'stats.urgent': 'Urgent',
   'list.loading': 'Loading tasks',
   'list.empty': 'No open tasks',
   'list.emptyHint': 'Change the filter or the search.',
@@ -144,6 +148,12 @@ export const en = {
 
   // What the agent can use besides the prompt
   'agent.cliHint': 'The `redmine` CLI is available to read or update task #{id}. Its number is also in `$REDMINE_ISSUE`.',
+  'agent.launch': 'Launch agent',
+  'agent.send': 'Send to terminal',
+  'agent.where': 'Where',
+  'agent.whereNew': 'New workspace',
+  'agent.whereHere': 'This workspace',
+  'agent.close': 'Close',
   'agent.noCli': 'The agent gets the task text from the plugin. To let it comment on or update the task itself, install redmine-cli (the `redmine` command) and its agent skill.',
 
   // Send to the current workspace's agent
@@ -158,6 +168,11 @@ export const en = {
   'send.rejected': 'The terminal did not accept the text',
 
   // Time and comments
+  'time.day': 'Day',
+  'time.today': 'Today',
+  'time.yesterday': 'Yesterday',
+  'time.otherDay': 'Another day…',
+  'time.otherDayLabel': 'Date (YYYY-MM-DD)',
   'time.hours': 'Hours',
   'time.comment': 'Comment',
   'time.mine': 'My time',
@@ -183,6 +198,7 @@ export const en = {
   'errors.network': 'Could not reach Redmine ({detail})',
   'errors.invalid_url': 'The Redmine URL must start with http:// or https://',
   'errors.invalid_hours': 'Hours must be between 0 and 24',
+  'errors.invalid_day': 'Pick a day that is not in the future (YYYY-MM-DD)',
   'errors.http_error': 'Redmine refused the request: {detail}',
   'errors.orca_cli': 'Could not run the Orca CLI ({detail})',
   'errors.workspace_not_listed': 'Orca does not list this workspace',

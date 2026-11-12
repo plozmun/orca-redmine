@@ -23,7 +23,6 @@ export const es: Messages = {
   'disconnect.cancel': 'Seguir conectado',
 
   'section.tasks': 'Tareas',
-  'section.agent': 'Agente',
 
   'workspace.none': 'Sin workspace enfocado: se muestran tareas de todos los proyectos.',
   'workspace.orcaProjectUnknown': 'No se pudo identificar el proyecto de Orca',
@@ -44,7 +43,12 @@ export const es: Messages = {
 
   'list.search': 'Buscar',
   'list.searchPlaceholder': 'Asunto o #número',
-  'list.onlyMine': 'Solo asignadas a mí',
+  'list.scope': 'Qué tareas',
+  'list.scopeMine': 'Mías',
+  'list.scopeAll': 'De todos',
+  'stats.open': 'Abiertas',
+  'stats.overdue': 'Vencidas',
+  'stats.urgent': 'Urgentes',
   'list.loading': 'Cargando tareas',
   'list.empty': 'Sin tareas abiertas',
   'list.emptyHint': 'Cambia el filtro o la búsqueda.',
@@ -133,6 +137,12 @@ export const es: Messages = {
   'here.unsupported': 'Esta versión de Orca no puede lanzar agentes en un workspace: actualiza Orca.',
 
   'agent.cliHint': 'Tienes el CLI `redmine` para leer o actualizar la tarea #{id}. Su número también está en `$REDMINE_ISSUE`.',
+  'agent.launch': 'Lanzar agente',
+  'agent.send': 'Enviar a terminal',
+  'agent.where': 'Dónde',
+  'agent.whereNew': 'Workspace nuevo',
+  'agent.whereHere': 'Este workspace',
+  'agent.close': 'Cerrar',
   'agent.noCli': 'El agente recibe el texto de la tarea desde el plugin. Para que también pueda comentarla o actualizarla, instala redmine-cli (el comando `redmine`) y su skill para agentes.',
 
   'send.title': 'Enviar al agente',
@@ -145,6 +155,11 @@ export const es: Messages = {
   'send.accepted': 'Prompt escrito en el terminal: revísalo y pulsa Enter',
   'send.rejected': 'El terminal no aceptó el texto',
 
+  'time.day': 'Día',
+  'time.today': 'Hoy',
+  'time.yesterday': 'Ayer',
+  'time.otherDay': 'Otro día…',
+  'time.otherDayLabel': 'Fecha (AAAA-MM-DD)',
   'time.hours': 'Horas',
   'time.comment': 'Comentario',
   'time.mine': 'Mis imputaciones',
@@ -169,6 +184,7 @@ export const es: Messages = {
   'errors.network': 'No se pudo conectar con Redmine ({detail})',
   'errors.invalid_url': 'La URL de Redmine debe empezar por http:// o https://',
   'errors.invalid_hours': 'Las horas deben estar entre 0 y 24',
+  'errors.invalid_day': 'Elige un día que no sea futuro (AAAA-MM-DD)',
   'errors.http_error': 'Redmine rechazó la petición: {detail}',
   'errors.orca_cli': 'No se pudo ejecutar el CLI de Orca ({detail})',
   'errors.workspace_not_listed': 'Orca no lista este workspace',

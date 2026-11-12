@@ -4,7 +4,7 @@
 import type { CommentsMode } from './launch'
 import type { Followup } from './followups'
 import type { CreatedWorktree, LocatedWorkspace } from './orca-workspaces'
-import type { IssueDetail, IssueStatus, IssueSummary, Project, TimeEntry } from './redmine'
+import type { IssueDetail, IssueStatus, IssueSummary, OpenCounts, Project, TimeEntry } from './redmine'
 
 export interface ConnectionStatus {
   configured: boolean
@@ -42,7 +42,10 @@ declare module 'orca' {
     }
     'redmine.setStatus': { input: { id: number; statusId: number }; output: IssueDetail }
     'redmine.comment': { input: { id: number; notes: string }; output: IssueDetail }
-    'redmine.logTime': { input: { id: number; hours: number; comments: string }; output: { timeEntryId: number } }
+    /** `spentOn`: the day to book, `YYYY-MM-DD`, at most today; today when left out. */
+    'redmine.logTime': { input: { id: number; hours: number; comments: string; spentOn?: string }; output: { timeEntryId: number } }
+    /** My open tasks, overdue ones and urgent ones: the list header's tiles and the status bar. */
+    'redmine.counts': { output: OpenCounts }
     /** The current user's time entries on a task. */
     'redmine.timeEntries': { input: { id: number }; output: TimeEntry[] }
     /** Orca projects (repositories) a workspace can be created in. */
@@ -89,5 +92,7 @@ declare module 'orca' {
     'redmine.issueChanged': { id: number }
     /** After the worker records or dismisses a follow-up: open panels show the new list. */
     'redmine.followupsChanged': { followups: Followup[] }
+    /** After the worker counted my tasks again (status bar tick or a change from a panel). */
+    'redmine.countsChanged': OpenCounts
   }
 }

@@ -3,6 +3,7 @@ import { storage } from 'orca'
 import { assert, hostError, mockHost, mount, test } from 'orca/testing'
 import * as panel from './panel'
 import type { Followup } from './followups'
+import { localDateDaysAgo } from './days'
 
 const summary = {
   id: 4077,
@@ -84,6 +85,11 @@ async function pick(view: View, id: string, value: string) {
   await view.press({ testId: `${id}-open` })
   await view.press({ testId: `${id}-${value}` })
 }
+/** Opens "Launch agent" and switches it to the focused workspace. */
+async function openHere(view: View, button = 'Launch agent') {
+  await view.press({ text: button })
+  await view.select({ type: 'RadioGroup' }, 'here')
+}
 const RP = 'redmine-project'
 const PICKER_SEARCH = 'Search: Redmine project for shop'
 const OP = 'orca-project'
@@ -134,7 +140,7 @@ test('lists tasks, opens one and sends the prompt to the terminal', async () => 
 
   await view.press({ type: 'ListItem' })
   assert.ok(view.find({ text: 'Checkout screen' }) && view.find({ text: '#4077' }))
-  await view.toggle({ type: 'Collapsible', label: 'Send to agent' })
+  await view.press({ text: 'Send to terminal' })
   await view.press({ text: 'Send prompt' })
   assert.deepEqual(sent, [{ id: 4077, terminalId: 't1', locale: 'en' }])
   assert.ok(view.find({ text: 'Prompt typed into the terminal: review it and press Enter' }))
@@ -255,7 +261,7 @@ test('launches the agent in a new workspace and assigns it the task', async () =
   const view = await mount(panel, { host: connectedHost(asked), locale: 'en' })
   await view.emit('workspace.changed', ws('web-x'))
   await view.press({ type: 'ListItem' })
-  await view.toggle({ type: 'Collapsible', label: 'Launch agent in a new workspace' })
+  await view.press({ text: 'Launch agent' })
   // With no project mapping, it suggests the focused workspace's Orca project.
   assert.equal(pickerValue(view, OP), 'web')
   assert.ok(view.find({ text: 'Workspace and branch: 4077-checkout-screen (with Orca’s branch prefix)' }))
@@ -287,7 +293,7 @@ test('suggests the Orca project mapped to the task’s Redmine project', async (
   await pick(view, RP, 'shop')
   await view.emit('workspace.changed', ws('web-x'))
   await view.press({ type: 'ListItem' })
-  await view.toggle({ type: 'Collapsible', label: 'Launch agent in a new workspace' })
+  await view.press({ text: 'Launch agent' })
   assert.equal(pickerValue(view, OP), 'shop')
   await view.unmount()
 })
@@ -305,7 +311,7 @@ test('launches the agent in the focused workspace and assigns it the task when i
   })
   await view.emit('workspace.changed', ws('shop-a', [{ id: 't1', title: 'claude' }]))
   await view.press({ type: 'ListItem' })
-  await view.toggle({ type: 'Collapsible', label: 'Launch agent in the current workspace' })
+  await openHere(view)
   await view.press({ text: 'Launch agent here' })
   assert.deepEqual(asked.at(-1), {
     here: {
@@ -339,7 +345,7 @@ test('launching here keeps a task the workspace already has', async () => {
   assert.ok(view.find({ text: '← Back' }))
   await view.press({ text: '← Back' })
   await view.press({ type: 'ListItem' })
-  await view.toggle({ type: 'Collapsible', label: 'Launch agent in the current workspace' })
+  await openHere(view)
   await view.press({ text: 'Launch agent here' })
   assert.deepEqual(view.persisted.storage['links.issueByWorkspace'], { 'wt-a': { id: 4081, subject: 'Mobile pass' } })
   assert.ok(view.find({ text: 'Claude Code started in this workspace.' }))
@@ -349,8 +355,12 @@ test('launching here keeps a task the workspace already has', async () => {
 })
 
 test('launch here is disabled without a focused workspace and when this Orca cannot start agents', async () => {
-  // The section's open state is kept, as the `launchHere` check scenario relies on.
-  let view = await mount(panel, { host: connectedHost(), locale: 'en', persisted: { plugin: { 'redmine.hereOpen': true } } })
+  // The open form and its "where" are kept, as the `launchHere` check scenario relies on.
+  let view = await mount(panel, {
+    host: connectedHost(),
+    locale: 'en',
+    persisted: { plugin: { 'redmine.agentSheet': 'launch', 'redmine.launchWhere': 'here' } }
+  })
   await view.press({ type: 'ListItem' })
   assert.equal(view.find({ text: 'Launch agent here' })?.disabled, true)
   assert.ok(drawn(view, 'Open a workspace to launch the agent in it.'))
@@ -363,7 +373,7 @@ test('launch here is disabled without a focused workspace and when this Orca can
   })
   await view.emit('workspace.changed', ws('shop-a', [{ id: 't1' }]))
   await view.press({ type: 'ListItem' })
-  await view.toggle({ type: 'Collapsible', label: 'Launch agent in the current workspace' })
+  await openHere(view)
   assert.equal(view.find({ text: 'Launch agent here' })?.disabled, true)
   assert.ok(drawn(view, 'This Orca version cannot launch agents in a workspace: update Orca.'))
   await view.unmount()
@@ -380,7 +390,7 @@ test('a failed launch here shows the translated error and assigns nothing', asyn
   })
   await view.emit('workspace.changed', ws('shop-a', [{ id: 't1' }]))
   await view.press({ type: 'ListItem' })
-  await view.toggle({ type: 'Collapsible', label: 'Lanzar agente en el workspace actual' })
+  await openHere(view, 'Lanzar agente')
   await view.press({ text: 'Lanzar agente aquí' })
   assert.ok(view.find({ text: 'Orca no dejó al plugin lanzar agentes: aprueba sus permisos' }))
   assert.deepEqual(view.persisted.storage['links.issueByWorkspace'], {})
@@ -393,7 +403,7 @@ test('instructions and comments start from the plugin settings and can be change
   const view = await mount(panel, { host, locale: 'en' })
   await view.emit('workspace.changed', ws('shop-a'))
   await view.press({ type: 'ListItem' })
-  await view.toggle({ type: 'Collapsible', label: 'Launch agent in a new workspace' })
+  await view.press({ text: 'Launch agent' })
   assert.equal(view.valueOf({ label: 'Instructions for the agent' }), 'Fix #4077 in Shop')
   assert.equal(view.valueOf({ type: 'Select', label: 'Comments in the context' }), 'all')
 
@@ -521,8 +531,55 @@ test('the Time tab lists my entries with their total and logs new time', async (
   await view.type({ label: 'Hours' }, '2,5')
   await view.type({ label: 'Comment' }, 'Checkout API')
   await view.press({ text: 'Log' })
-  assert.deepEqual(asked.at(-1), { logTime: { id: 4077, hours: 2.5, comments: 'Checkout API' } })
+  assert.deepEqual(asked.at(-1), { logTime: { id: 4077, hours: 2.5, comments: 'Checkout API', spentOn: localDateDaysAgo(0) } })
   assert.ok(view.find({ text: '2.5 h logged on #4077' }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('time can go to an earlier day, picked from the last week or typed, never a future one', async () => {
+  const asked: unknown[] = []
+  const view = await mount(panel, {
+    host: connectedHost(asked, {
+      'redmine.logTime': ((input: unknown) => {
+        asked.push({ logTime: input })
+        return { timeEntryId: 11 }
+      }) as never
+    }),
+    locale: 'en'
+  })
+  await view.press({ type: 'ListItem' })
+  await view.select({ type: 'Tabs' }, 'time')
+  await view.type({ label: 'Hours' }, '1')
+  await view.select({ label: 'Day' }, localDateDaysAgo(1))
+  await view.press({ text: 'Log' })
+  assert.deepEqual(asked.at(-1), { logTime: { id: 4077, hours: 1, comments: '', spentOn: localDateDaysAgo(1) } })
+
+  // Another day: typed, and the button waits for a real day that is not in the future.
+  await view.type({ label: 'Hours' }, '3')
+  await view.select({ label: 'Day' }, 'other')
+  await view.type({ label: 'Date (YYYY-MM-DD)' }, localDateDaysAgo(-1))
+  assert.equal(view.find({ text: 'Log' })?.disabled, true)
+  await view.type({ label: 'Date (YYYY-MM-DD)' }, localDateDaysAgo(30), { replace: true })
+  await view.press({ text: 'Log' })
+  assert.deepEqual(asked.at(-1), { logTime: { id: 4077, hours: 3, comments: '', spentOn: localDateDaysAgo(30) } })
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('the list shows my open, overdue and urgent counts, and the worker keeps them current', async () => {
+  const view = await mount(panel, {
+    host: connectedHost([], { 'redmine.counts': () => ({ total: 7, overdue: 0, urgent: 2 }) }),
+    locale: 'en'
+  })
+  assert.ok(view.find({ text: 'OPEN' }) && drawn(view, '"7"'))
+  assert.ok(view.find({ text: 'URGENT' }))
+  view.post('redmine.countsChanged', { total: 8, overdue: 1, urgent: 2 })
+  await view.settled()
+  assert.ok(drawn(view, '"8"'))
+  // Mine or everyone's: the list asks again.
+  await view.select({ type: 'RadioGroup' }, 'all')
+  assert.equal(view.persisted.plugin['redmine.onlyMine'], false)
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
@@ -716,7 +773,7 @@ test('logging time from a follow-up is pre-filled with the agent working time an
   await view.press({ text: 'Log time' })
   assert.equal(view.valueOf({ label: 'Hours' }), '1.25')
   await view.press({ text: 'Save time' })
-  assert.deepEqual(writes, [{ time: { id: 4077, hours: 1.25, comments: '' } }])
+  assert.deepEqual(writes, [{ time: { id: 4077, hours: 1.25, comments: '', spentOn: localDateDaysAgo(0) } }])
   assert.deepEqual(dismissed, [agentDone.id])
   assert.equal(view.find({ text: 'Agent finished on #4077' }), null)
   assert.deepEqual(view.errors, [])

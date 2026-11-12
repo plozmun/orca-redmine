@@ -2,7 +2,7 @@
 import { afterEach, assert, mockHost, mountWorker, test } from 'orca/testing'
 import { systemLocale, translate } from './i18n'
 import { runOrcaJson } from './orca-workspaces'
-import { resetRedmineCaches } from './redmine'
+import { localDateDaysAgo, resetRedmineCaches } from './redmine'
 import * as main from './worker'
 import { createFollowup, MAX_FOLLOWUPS, type Followup } from './followups'
 
@@ -86,6 +86,23 @@ test('lists issues and notifies panels after logging time', async () => {
   assert.deepEqual(JSON.parse(calls.at(-1)!.body!), { time_entry: { issue_id: 77, hours: 1.5, comments: 'review' } })
   assert.deepEqual(worker.posts, [{ event: 'redmine.issueChanged', payload: { id: 77 } }])
   await assert.rejects(worker.request('redmine.logTime', { id: 77, hours: 30, comments: '' }), (e: { code: string }) => e.code === 'invalid_hours')
+  await worker.deactivate()
+})
+
+test('logs time on a chosen day, never in the future', async () => {
+  const calls = stubFetch({ '/time_entries.json': { time_entry: { id: 10 } } })
+  const worker = await mountWorker(main, { host: mockHost(configured) })
+  const yesterday = localDateDaysAgo(1)
+  await worker.request('redmine.logTime', { id: 77, hours: 2, comments: '', spentOn: yesterday })
+  assert.deepEqual(JSON.parse(calls.at(-1)!.body!), { time_entry: { issue_id: 77, hours: 2, comments: '', spent_on: yesterday } })
+  const sent = calls.length
+  for (const spentOn of [localDateDaysAgo(-1), '2026-02-30', '11/12/2026']) {
+    await assert.rejects(
+      worker.request('redmine.logTime', { id: 77, hours: 1, comments: '', spentOn }),
+      (e: { code: string }) => e.code === 'invalid_day'
+    )
+  }
+  assert.equal(calls.length, sent, 'a bad day never reaches Redmine')
   await worker.deactivate()
 })
 
@@ -1086,6 +1103,21 @@ async function tick(host: { callsOf(method: string): unknown[] }, scheduled: { r
 }
 
 const text = (key: Parameters<typeof translate>[1], vars: Record<string, string | number>) => translate(systemLocale(), key, vars)
+
+test('the list header gets the same counts, reused for a minute and posted when they change', async () => {
+  resetRedmineCaches()
+  fakeTimers()
+  const redmine = statusBarRedmine({ total: 4, overdue: 1 })
+  // The status bar is off: the panel's request is the only one that counts.
+  const worker = await mountWorker(main, { host: mockHost({ ...counted, settings: { ...counted.settings, statusBar: false } }) })
+  assert.deepEqual(await worker.request('redmine.counts'), { total: 4, overdue: 1, urgent: 0 })
+  assert.deepEqual(worker.posts.at(-1), { event: 'redmine.countsChanged', payload: { total: 4, overdue: 1, urgent: 0 } })
+  const asked = redmine.requests.length
+  redmine.counts.total = 5
+  assert.deepEqual(await worker.request('redmine.counts'), { total: 4, overdue: 1, urgent: 0 }, 'a fresh count is reused')
+  assert.equal(redmine.requests.length, asked)
+  await worker.deactivate()
+})
 
 test('the item shows my open task count, in the tone of what needs attention', async () => {
   resetRedmineCaches()

@@ -15,9 +15,9 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 
 ## Features
 
-- **Redmine panel** (flag icon, right sidebar): your tasks (or everyone's), searchable by subject or `#number`, filtered by status (open by default, closed, any, or one status; the choice is kept).
-- **Task detail**: description, history, status, priority and done ratio, laid out like Orca's own sidebar panels (compact header, key/value details, sections). Redmine's Textile (numbered lists, `h2.` headings, `!image.png!`, `<pre>`) is shown as Markdown. When the focused workspace has a task assigned, the panel opens it (also after switching workspaces); a workspace without one shows the list. *Back* lets you browse the list meanwhile.
-- **Change status**, **comment** and **log time** without leaving Orca.
+- **Redmine panel** (flag icon, right sidebar): a header with the server and your user, tiles with your open, overdue and urgent tasks, then your tasks (or everyone's), searchable by subject or `#number`, filtered by status (open by default, closed, any, or one status; the choice is kept).
+- **Task detail**: a header with the number, tracker and status; a card with the title, project, assignee, priority, done ratio (with a progress bar) and the status picker; then *Launch agent* and *Send to terminal*, each opening its form underneath; then description, history and time. Redmine's Textile (numbered lists, `h2.` headings, `!image.png!`, `<pre>`) is shown as Markdown. When the focused workspace has a task assigned, the panel opens it (also after switching workspaces); a workspace without one shows the list. *Back* lets you browse the list meanwhile.
+- **Change status**, **comment** and **log time** without leaving Orca. Time goes to today, a day of the past week, or a typed date (`YYYY-MM-DD`, never a future one).
 - **A Redmine project per Orca project**: map each Orca project (repository) once to a Redmine project, with a filter to find it among many. All its workspaces use it to filter the list. Remove it with ✕.
 - **A task per workspace**: each workspace can have one task assigned, or none. Stored by the stable worktree id, so renaming the workspace keeps it. When the workspace name or branch names a task (`12345-login`, `feature/12345-login`, `#12345`, `rm-12345`), the panel offers to assign it.
 - **Automatic link at creation**: a worktree created any way (Orca's dialog, the CLI, automations, other agents) whose name or branch names a task you can see in Redmine is linked to it. If its Orca project is mapped to a Redmine project, the task must be in that project or a subproject. A workspace that already has another task is left alone.
@@ -26,9 +26,9 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 - **Record the start in Redmine** (optional, off by default): a comment naming the workspace and branch, and optionally a move from the first open status (New) to the next one.
 - **Follow-ups after agent work**: when the main agent of a workspace linked to a task finishes (success, failure or Orca could not tell), or when a linked worktree is removed, a follow-up appears at the top of the task list. One click opens the task, comments, changes status, logs time (pre-filled with the agent's working time, rounded to 0.25 h) or dismisses it. **Nothing is written to Redmine without that click**, and follow-ups survive closing the panel and restarting Orca.
 - **Optional notification** (off by default): a desktop notification when an agent on a linked task finishes (`done`) or also when it needs input (`doneAndBlocked`). It names the task number and subject only, never the description or comments.
-- **Launch an agent in a new workspace**: from a task, create a worktree in an Orca project, start an agent with the task context, and assign the task to the new workspace — like Orca does for GitHub, GitLab, Jira and Linear.
-- **Launch an agent here**: starts the chosen agent in a new terminal of the current workspace with the same instructions and context, and assigns the task to it when it has none. If the prompt would exceed Orca's 4,096-character limit, the context goes in the file *Send to agent* uses and the prompt points to it.
-- **Send to agent**: types the task prompt into a terminal of the current workspace. It **does not press Enter**, so you can review it first. A terminal line cannot carry the description and comments, so they go in a file (`<tmp>/orca-redmine/<id>.md`, readable only by you) that the prompt points to.
+- **Launch agent → New workspace**: from a task, create a worktree in an Orca project, start an agent with the task context, and assign the task to the new workspace — like Orca does for GitHub, GitLab, Jira and Linear.
+- **Launch agent → This workspace**: starts the chosen agent in a new terminal of the current workspace with the same instructions and context, and assigns the task to it when it has none. If the prompt would exceed Orca's 4,096-character limit, the context goes in the file *Send to terminal* uses and the prompt points to it.
+- **Send to terminal**: types the task prompt into a terminal of the current workspace. It **does not press Enter**, so you can review it first. A terminal line cannot carry the description and comments, so they go in a file (`<tmp>/orca-redmine/<id>.md`, readable only by you) that the prompt points to.
 - **Works without redmine-cli**: agents get the task text from the plugin. When the [`redmine` CLI](#redmine-cli) is installed, the prompt also tells the agent it can use it to update the task; when it is not, the panel suggests installing it.
 - **Command palette**: `Redmine: my open tasks`.
 - **Status bar count**: the number of open tasks assigned to you, beside a flag, with the Redmine panel one press away. Amber when one is overdue, red when one has an urgent or immediate priority; hover for the counts. It refreshes every few minutes, right after the panel changes a task, and is hidden while Redmine is not connected or you turn it off in Settings. The worker therefore runs for as long as the plugin is enabled.
@@ -55,6 +55,7 @@ src/task-ref.ts         Task number in a workspace name or branch; branch templa
 src/followups.ts        Agent-finish and workspace-removal follow-ups: transitions, working time, store rules
 src/plugin-key.ts       Which qualified plugin key (catalog or dev folder) the worker has
 src/links.ts            Storage keys for workspace ↔ task links
+src/days.ts             Calendar days for time entries (picker choices, bookable-day check)
 src/agent-files.ts      Context file for "Send to agent" and the `redmine` CLI check
 src/textile.ts          Textile → Markdown for descriptions and comments
 src/i18n/               Translations: en.ts (source), es.ts, index.ts (translate, locale resolution)
@@ -62,7 +63,7 @@ src/protocol.ts         Typed panel <-> worker contract
 src/worker.ts           Node worker: network, secrets, CLI, terminal, status bar, commands
 src/panel.tsx           Orca components panel (TSX, no build step)
 src/**/*.test.ts(x)     Tests (`orca plugin test`)
-src/panel.check.ts      Scenarios for `orca plugin check` (`list`, `detail` and `launchHere` use sample data, for `orca plugin shot . --scenario`)
+src/panel.check.ts      Scenarios for `orca plugin check` (`list`, `detail`, `followups` and `launchHere` use sample data, for `orca plugin shot . --scenario`)
 ```
 
 ## Settings

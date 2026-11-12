@@ -47,7 +47,8 @@ const sample = {
       located: { workspaceKey: 'wt-1', orcaProjectId: 'git:shop', orcaProjectName: 'shop' }
     }),
     'redmine.orcaProjects': () => [{ id: 'git:shop', name: 'shop' }],
-    'redmine.launchHereSupport': () => ({ available: true })
+    'redmine.launchHereSupport': () => ({ available: true }),
+    'redmine.counts': () => ({ total: 12, overdue: 2, urgent: 1 })
   },
   events: [
     {
@@ -117,7 +118,8 @@ export default defineCheck({
       plugin: {
         'redmine.projectByOrcaProject': { 'git:shop': 'shop' },
         'redmine.issueByWorkspace': { 'wt-1': { id: 4077, subject: 'Checkout screen with saved cards' } },
-        'redmine.hereOpen': true
+        'redmine.agentSheet': 'launch',
+        'redmine.launchWhere': 'here'
       }
     }
   },

@@ -686,3 +686,50 @@ test('follow-ups can be read and dismissed, and the store keeps at most 20', asy
   assert.deepEqual(worker.posts.at(-1), { event: 'redmine.followupsChanged', payload: { followups: dismissed.followups } })
   await worker.deactivate()
 })
+
+test('locating a workspace remembers its ids, so removing it by CLI id still clears a hand-made link', async () => {
+  // The worktree is gone by the time the removal arrives: only the ids seen at locate remain.
+  main.setOrcaLister(async () => ({ projects: [], worktrees: [] }))
+  const host = mockHost({
+    capabilities: ['workspace:read', 'storage:own'],
+    storage: { 'links.issueByWorkspace': { 'wt-1': { id: 4077, subject: 'Checkout with saved cards' } } },
+    results: {
+      'workspace.list': {
+        workspaces: [
+          {
+            id: 'identity:wt-1',
+            kind: 'worktree',
+            name: '4077-checkout',
+            path: '/repos/shop/4077-checkout',
+            branch: 'feature/2-pay',
+            hostId: 'local'
+          }
+        ],
+        truncated: false
+      }
+    }
+  })
+  const worker = await mountWorker(main, { host })
+
+  const answer = await worker.request('redmine.locateWorkspace', { displayName: '4077-checkout', branch: 'feature/2-pay' })
+  assert.equal((answer.located as { workspaceKey: string } | null)?.workspaceKey, 'wt-1')
+  // Remembering is fire-and-forget: the locate never waits on storage.
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.deepEqual(host.data().storage['links.workspaceIds'], {
+    'identity:wt-1': 'wt-1',
+    '/repos/shop/4077-checkout': 'wt-1'
+  })
+
+  // Orca names the removal by the CLI form (`<repoId>::<path>`), not the identity form.
+  await worker.emit('workspace.removed', {
+    workspaceId: 'r::/repos/shop/4077-checkout',
+    kind: 'worktree',
+    path: '/repos/shop/4077-checkout'
+  })
+  assert.equal((host.data().storage['links.issueByWorkspace'] as Record<string, unknown>)['wt-1'], undefined)
+  const followups = host.data().storage.followups as Followup[]
+  assert.equal(followups.length, 1)
+  assert.equal(followups[0].kind, 'workspaceRemoved')
+  assert.equal(followups[0].issueId, 4077)
+  await worker.deactivate()
+})

@@ -10,6 +10,8 @@ export interface WorktreeRow {
   projectId?: string | null
   displayName?: string
   branch?: string
+  /** Where the worktree lives, as the CLI reports it; used to remember the workspace ids. */
+  path?: string | null
 }
 
 export interface OrcaProjectRow {
@@ -67,10 +69,28 @@ function projectOf(listing: OrcaListing, row: WorktreeRow): Pick<LocatedWorkspac
   }
 }
 
+/** A matched CLI row, kept so its id and path can be remembered with the link key. */
+export interface MatchedWorktree {
+  located: LocatedWorkspace
+  /** The CLI's `<repoId>::<path>` id, as workspace events may name it. */
+  id: string
+  path: string | null
+}
+
+/** Locates the focused workspace in the CLI listing, with the row it came from. */
+export function matchWorktreeWithRow(listing: OrcaListing, context: FocusedContext): MatchedWorktree | null {
+  const row = pickRow(listing.worktrees, (w) => w.displayName, (w) => w.branch, context)
+  if (!row) return null
+  return {
+    located: { workspaceKey: cliKey(row), ...projectOf(listing, row) },
+    id: row.id,
+    path: row.path ?? null
+  }
+}
+
 /** Locates the focused workspace in the CLI listing (key and Orca project). */
 export function matchWorktree(listing: OrcaListing, context: FocusedContext): LocatedWorkspace | null {
-  const pick = pickRow(listing.worktrees, (w) => w.displayName, (w) => w.branch, context)
-  return pick ? { workspaceKey: cliKey(pick), ...projectOf(listing, pick) } : null
+  return matchWorktreeWithRow(listing, context)?.located ?? null
 }
 
 /** The Orca project of the worktree stored under `key`, or null when the CLI does not list it. */

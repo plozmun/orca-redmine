@@ -12,14 +12,13 @@ import {
   listOrca,
   keyFromHostId,
   matchHostWorkspace,
-  matchWorktree,
+  matchWorktreeWithRow,
   projectForKey,
   shortBranch,
   type CreatedWorktree,
   type CreateWorktreeOptions,
   type FocusedContext,
   type HostWorkspaceRow,
-  type LocatedWorkspace,
   type OrcaListing
 } from './orca-workspaces'
 import type { ConnectionStatus } from './protocol'
@@ -124,28 +123,46 @@ async function status(orca: OrcaWorkerApi): Promise<ConnectionStatus> {
   }
 }
 
+/** A workspace matched for the focused context: the link key plus the ids Orca events name it by. */
+interface LocatedWorkspaceMatch {
+  key: string
+  id: string
+  path: string | null
+}
+
 /**
  * The focused workspace's link key from the host's `workspace.list`, without the CLI. Null when the
  * host cannot say (older Orca, a refusal, or a truncated listing without it): the CLI decides then.
  */
-async function hostWorkspaceKey(orca: OrcaWorkerApi, context: FocusedContext): Promise<string | null> {
+async function hostWorkspaceMatch(orca: OrcaWorkerApi, context: FocusedContext): Promise<LocatedWorkspaceMatch | null> {
   if (!orca.host.has('workspace.list')) return null
   try {
     const { workspaces } = (await orca.host.call('workspace.list', {})) as { workspaces: HostWorkspaceRow[]; truncated: boolean }
-    return matchHostWorkspace(workspaces, context)
+    const key = matchHostWorkspace(workspaces, context)
+    if (!key) return null
+    const row = workspaces.find((w) => keyFromHostId(w.id) === key)
+    return { key, id: row?.id ?? `identity:${key}`, path: row?.path ?? null }
   } catch (error) {
     orca.log(`workspace.list: ${errorParts(error).errorDetail}`)
     return null
   }
 }
 
-/** The CLI-only lookup: key and Orca project from `orca worktree list`, asking again on a miss. */
-async function locateWithCli(context: FocusedContext): Promise<LocatedWorkspace | null> {
-  const located = matchWorktree(await orcaLister(), context)
+/** The CLI-only lookup: key, Orca project and row from `orca worktree list`, asking again on a miss. */
+async function locateWithCli(context: FocusedContext) {
+  const located = matchWorktreeWithRow(await orcaLister(), context)
   if (located) return located
   // It may be a brand-new workspace: ask again without the cache.
   clearOrcaCache()
-  return matchWorktree(await orcaLister(), context)
+  return matchWorktreeWithRow(await orcaLister(), context)
+}
+
+/**
+ * Stores the ids a located workspace is named by, so a later `workspace.removed` can still find its
+ * link. Best effort: a storage problem must not fail the locate, which the panel needs.
+ */
+function rememberLocatedIds(orca: OrcaWorkerApi, key: string, ids: readonly (string | null | undefined)[]): void {
+  void rememberWorkspaceIds(orca, key, ids).catch((error) => orca.log(`locateWorkspace (ids): ${errorParts(error).errorDetail}`))
 }
 
 /** The Orca project of a workspace already identified by the host, asking again on a miss. */
@@ -496,8 +513,11 @@ export default function activate(orca: OrcaWorkerApi): void {
   orca.panels.handle('redmine.projects', async () => (await client(orca)).listProjects())
 
   orca.panels.handle('redmine.locateWorkspace', async (context) => {
-    const key = await hostWorkspaceKey(orca, context)
-    if (key) {
+    const found = await hostWorkspaceMatch(orca, context)
+    if (found) {
+      // Remembered for a later `workspace.removed`, even for a workspace the panel linked by hand.
+      rememberLocatedIds(orca, found.key, [found.id, found.path])
+      const key = found.key
       // The workspace is known; only its Orca project needs the CLI, and failing that is not fatal.
       try {
         const project = await projectWithCli(key)
@@ -511,7 +531,9 @@ export default function activate(orca: OrcaWorkerApi): void {
     }
     try {
       const located = await locateWithCli(context)
-      return located ? { located } : { located: null, errorCode: 'workspace_not_listed', errorDetail: context.displayName }
+      if (!located) return { located: null, errorCode: 'workspace_not_listed', errorDetail: context.displayName }
+      rememberLocatedIds(orca, located.located.workspaceKey, [located.id, located.path])
+      return { located: located.located }
     } catch (error) {
       const parts = errorParts(error)
       orca.log(`locateWorkspace: ${parts.errorDetail}`)

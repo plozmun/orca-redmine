@@ -97,7 +97,7 @@ export interface OpenCounts {
   total: number
   /** Of those, whose due date is before today. */
   overdue: number
-  /** Of those, in a priority above the instance's default priority. */
+  /** Of those, in one of the two highest priorities (stock Redmine: Urgent and Immediate). */
   urgent: number
 }
 
@@ -109,19 +109,29 @@ export interface IssuePriority {
 }
 
 /** `YYYY-MM-DD` for `at` in local time: Redmine due dates are days, not instants. */
-export function localDate(at: Date = new Date()): string {
+function localDate(at: Date): string {
   const month = String(at.getMonth() + 1).padStart(2, '0')
   return `${at.getFullYear()}-${month}-${String(at.getDate()).padStart(2, '0')}`
 }
 
 /**
- * Ids of the priorities ranked above the default one, in the instance's own order (names differ per
- * install). Redmine does not tell a non-admin which priority is the default: it is the entry flagged
- * `is_default` when the instance says so, else the second one, which is Redmine's stock "Normal".
+ * `YYYY-MM-DD` for the day `days` before `at`, in local time. Calendar arithmetic, not milliseconds,
+ * so a change of daylight saving time does not shift the day.
+ */
+export function localDateDaysAgo(days: number, at: Date = new Date()): string {
+  return localDate(new Date(at.getFullYear(), at.getMonth(), at.getDate() - days))
+}
+
+/**
+ * Ids of the two highest priorities, in the instance's own order (names differ per install): the
+ * ranks at least two positions above the default one, which on stock Redmine (Low, Normal, High,
+ * Urgent, Immediate) are Urgent and Immediate. Redmine does not tell a non-admin which priority is
+ * the default: it is the entry flagged `is_default` when the instance says so, else the second one,
+ * which is Redmine's stock "Normal". An instance with fewer than three priorities has none.
  */
 export function urgentPriorityIds(priorities: readonly IssuePriority[]): number[] {
   const flagged = priorities.findIndex((p) => p.isDefault)
-  return priorities.slice((flagged >= 0 ? flagged : 1) + 1).map((p) => p.id)
+  return priorities.slice((flagged >= 0 ? flagged : 1) + 2).map((p) => p.id)
 }
 
 /** `GET /enumerations/issue_priorities.json` per base URL, kept for the worker's life. */
@@ -259,8 +269,10 @@ export class RedmineClient {
   async openCounts(): Promise<OpenCounts> {
     const mine = () => new URLSearchParams({ assigned_to_id: 'me', status_id: 'open', limit: '1' })
     const overdueParams = mine()
-    // Redmine's `<` operator on due_date: strictly before today. URLSearchParams encodes it as %3C.
-    overdueParams.set('due_date', `<${localDate()}`)
+    // Redmine's due_date shorthand has no plain `<` operator (`<=`, `>=`, `><`, `<t+`, `>t-`…), and
+    // an operator it does not know can be ignored or refused; "on or before yesterday" is "before
+    // today". URLSearchParams encodes `<=` as %3C%3D.
+    overdueParams.set('due_date', `<=${localDateDaysAgo(1)}`)
     const [total, overdue, priorities] = await Promise.all([
       this.countIssues(mine()),
       this.countIssues(overdueParams),

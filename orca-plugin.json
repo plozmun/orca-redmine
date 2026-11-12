@@ -136,7 +136,7 @@
       {
         "key": "statusBar",
         "title": "Show my open tasks in the status bar",
-        "description": "A number beside a flag in Orca's status bar, amber when a task is overdue and red when one has a high priority. Press it to open the Redmine panel. Hiding it also stops the refresh.",
+        "description": "A number beside a flag in Orca's status bar, amber when a task is overdue and red when one has an urgent or immediate priority. Press it to open the Redmine panel. Hiding it also stops the refresh.",
         "type": "boolean",
         "default": true
       },

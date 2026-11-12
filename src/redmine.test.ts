@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { localDate, projectSubtree, RedmineClient, RedmineError, resetRedmineCaches, urgentPriorityIds } from './redmine'
+import { localDateDaysAgo, projectSubtree, RedmineClient, RedmineError, resetRedmineCaches, urgentPriorityIds } from './redmine'
 
 function fakeFetch(responses: Record<string, { status?: number; body?: unknown }>) {
   const calls: { url: string; method: string; headers: Record<string, string>; body?: string }[] = []
@@ -193,10 +193,13 @@ test('the open counts come from limit=1 queries, and the priority list is read o
     assert.equal(params.get('status_id'), 'open')
     assert.equal(params.get('limit'), '1')
   }
+  // `<=` yesterday: Redmine's date shorthand has no plain `<`, and on or before yesterday is
+  // before today.
   const overdue = redmine.calls.find((url) => url.includes('due_date='))!
-  assert.ok(overdue.includes(`due_date=%3C${localDate()}`), overdue)
+  assert.ok(overdue.includes(`due_date=%3C%3D${localDateDaysAgo(1)}`), overdue)
+  assert.equal(new URL(overdue).searchParams.get('due_date'), `<=${localDateDaysAgo(1)}`)
   const urgent = redmine.calls.find((url) => url.includes('priority_id='))!
-  assert.equal(new URL(urgent).searchParams.get('priority_id'), '3|4|5')
+  assert.equal(new URL(urgent).searchParams.get('priority_id'), '4|5')
 
   // A second refresh asks Redmine for the counts again, not for the priorities.
   await client.openCounts()
@@ -204,20 +207,45 @@ test('the open counts come from limit=1 queries, and the priority list is read o
   assert.equal(redmine.calls.length, 7)
 })
 
-test('urgent priorities are those above the default one, in the instance order', () => {
-  assert.deepEqual(urgentPriorityIds(priorities), [3, 4, 5])
-  // An instance that flags its default: the ones after it.
+test('urgent priorities are the two ranks above the default one, in the instance order', () => {
+  // Stock Redmine, default "Normal": Urgent and Immediate, not High.
+  assert.deepEqual(urgentPriorityIds(priorities), [4, 5])
+  // An instance that flags its default: two ranks after it.
   assert.deepEqual(
     urgentPriorityIds([
       { id: 1, name: 'Low', isDefault: true },
       { id: 2, name: 'Normal' },
+      { id: 8, name: 'High' },
       { id: 9, name: 'Critical' }
     ]),
-    [2, 9]
+    [8, 9]
   )
-  // Nothing above the default: no urgent filter at all.
+  // A short list with nothing two ranks above its default: no urgent filter at all.
+  assert.deepEqual(
+    urgentPriorityIds([
+      { id: 1, name: 'Low' },
+      { id: 2, name: 'Normal' },
+      { id: 3, name: 'High' }
+    ]),
+    []
+  )
   assert.deepEqual(urgentPriorityIds([{ id: 1, name: 'Only' }]), [])
   assert.deepEqual(urgentPriorityIds([]), [])
+})
+
+test('without a priority two ranks above the default, no urgent count is asked for', async () => {
+  resetRedmineCaches()
+  const redmine = countingFetch({ total: 4, overdue: 1, urgent: 0 }, [
+    { id: 1, name: 'Low' },
+    { id: 2, name: 'Normal' },
+    { id: 3, name: 'High' }
+  ])
+  assert.deepEqual(await new RedmineClient('https://redmine.test', 'KEY', redmine.impl).openCounts(), {
+    total: 4,
+    overdue: 1,
+    urgent: 0
+  })
+  assert.ok(!redmine.calls.some((url) => url.includes('priority_id=')))
 })
 
 test('the priority enumeration is cached per Redmine URL', async () => {

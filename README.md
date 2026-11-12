@@ -27,7 +27,7 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 - **Send to agent**: types the task prompt into a terminal of the current workspace. It **does not press Enter**, so you can review it first. A terminal line cannot carry the description and comments, so they go in a file (`<tmp>/orca-redmine/<id>.md`, readable only by you) that the prompt points to.
 - **Works without redmine-cli**: agents get the task text from the plugin. When the [`redmine` CLI](#redmine-cli) is installed, the prompt also tells the agent it can use it to update the task; when it is not, the panel suggests installing it.
 - **Command palette**: `Redmine: my open tasks`.
-- **Status bar count**: the number of open tasks assigned to you, beside a flag, with the Redmine panel one press away. Amber when one is overdue, red when one is above the default priority; hover for the counts. It refreshes every few minutes, right after the panel changes a task, and is hidden while Redmine is not connected or you turn it off in Settings. The worker therefore runs for as long as the plugin is enabled.
+- **Status bar count**: the number of open tasks assigned to you, beside a flag, with the Redmine panel one press away. Amber when one is overdue, red when one has an urgent or immediate priority; hover for the counts. It refreshes every few minutes, right after the panel changes a task, and is hidden while Redmine is not connected or you turn it off in Settings. The worker therefore runs for as long as the plugin is enabled.
 - **English and Spanish UI**, following Orca's language.
 
 ## Usage

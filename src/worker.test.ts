@@ -548,7 +548,9 @@ const priorities = {
   issue_priorities: [
     { id: 1, name: 'Low' },
     { id: 2, name: 'Normal' },
-    { id: 3, name: 'High' }
+    { id: 3, name: 'High' },
+    { id: 4, name: 'Urgent' },
+    { id: 5, name: 'Immediate' }
   ]
 }
 

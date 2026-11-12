@@ -91,6 +91,57 @@ export function statusFilter(value: string | undefined): string {
   return value && /^(open|closed|\*|\d+)$/.test(value) ? value : 'open'
 }
 
+/** What the status bar shows: my open tasks, and how many need attention. */
+export interface OpenCounts {
+  /** Open tasks assigned to the current user. */
+  total: number
+  /** Of those, whose due date is before today. */
+  overdue: number
+  /** Of those, in one of the two highest priorities (stock Redmine: Urgent and Immediate). */
+  urgent: number
+}
+
+export interface IssuePriority {
+  id: number
+  name: string
+  /** Some Redmine instances answer with it; the stock API does not. */
+  isDefault?: boolean
+}
+
+/** `YYYY-MM-DD` for `at` in local time: Redmine due dates are days, not instants. */
+function localDate(at: Date): string {
+  const month = String(at.getMonth() + 1).padStart(2, '0')
+  return `${at.getFullYear()}-${month}-${String(at.getDate()).padStart(2, '0')}`
+}
+
+/**
+ * `YYYY-MM-DD` for the day `days` before `at`, in local time. Calendar arithmetic, not milliseconds,
+ * so a change of daylight saving time does not shift the day.
+ */
+export function localDateDaysAgo(days: number, at: Date = new Date()): string {
+  return localDate(new Date(at.getFullYear(), at.getMonth(), at.getDate() - days))
+}
+
+/**
+ * Ids of the two highest priorities, in the instance's own order (names differ per install): the
+ * ranks at least two positions above the default one, which on stock Redmine (Low, Normal, High,
+ * Urgent, Immediate) are Urgent and Immediate. Redmine does not tell a non-admin which priority is
+ * the default: it is the entry flagged `is_default` when the instance says so, else the second one,
+ * which is Redmine's stock "Normal". An instance with fewer than three priorities has none.
+ */
+export function urgentPriorityIds(priorities: readonly IssuePriority[]): number[] {
+  const flagged = priorities.findIndex((p) => p.isDefault)
+  return priorities.slice((flagged >= 0 ? flagged : 1) + 2).map((p) => p.id)
+}
+
+/** `GET /enumerations/issue_priorities.json` per base URL, kept for the worker's life. */
+const prioritiesByUrl = new Map<string, IssuePriority[]>()
+
+/** Tests: forgets the cached priority enumerations. */
+export function resetRedmineCaches(): void {
+  prioritiesByUrl.clear()
+}
+
 /**
  * Error with a stable `code`. The worker rethrows it, the panel receives `error.code` and shows
  * the translated text (see src/i18n). `message` carries untranslated detail (server text, URL).
@@ -190,6 +241,48 @@ export class RedmineClient {
   async currentUser(): Promise<RedmineUser> {
     const { user } = await this.call('GET', '/users/current.json')
     return { id: user.id, login: user.login ?? '', name: `${user.firstname ?? ''} ${user.lastname ?? ''}`.trim() }
+  }
+
+  private async countIssues(params: URLSearchParams): Promise<number> {
+    const data = await this.call('GET', `/issues.json?${params}`)
+    return data.total_count ?? 0
+  }
+
+  /** The instance's priorities in its own order, read once per base URL. */
+  private async issuePriorities(): Promise<IssuePriority[]> {
+    const cached = prioritiesByUrl.get(this.baseUrl)
+    if (cached) return cached
+    const data = await this.call('GET', '/enumerations/issue_priorities.json')
+    const priorities: IssuePriority[] = (data.issue_priorities ?? []).map((p: any) => ({
+      id: p.id,
+      name: p.name ?? '',
+      ...(p.is_default === true ? { isDefault: true } : {})
+    }))
+    prioritiesByUrl.set(this.baseUrl, priorities)
+    return priorities
+  }
+
+  /**
+   * My open tasks, how many are overdue and how many are urgent, as three `limit=1` counts: the
+   * number stays right past the 100 issues a listing would fetch.
+   */
+  async openCounts(): Promise<OpenCounts> {
+    const mine = () => new URLSearchParams({ assigned_to_id: 'me', status_id: 'open', limit: '1' })
+    const overdueParams = mine()
+    // Redmine's due_date shorthand has no plain `<` operator (`<=`, `>=`, `><`, `<t+`, `>t-`…), and
+    // an operator it does not know can be ignored or refused; "on or before yesterday" is "before
+    // today". URLSearchParams encodes `<=` as %3C%3D.
+    overdueParams.set('due_date', `<=${localDateDaysAgo(1)}`)
+    const [total, overdue, priorities] = await Promise.all([
+      this.countIssues(mine()),
+      this.countIssues(overdueParams),
+      this.issuePriorities()
+    ])
+    const urgentIds = urgentPriorityIds(priorities)
+    if (urgentIds.length === 0) return { total, overdue, urgent: 0 }
+    const urgentParams = mine()
+    urgentParams.set('priority_id', urgentIds.join('|'))
+    return { total, overdue, urgent: await this.countIssues(urgentParams) }
   }
 
   async listIssues(options: ListOptions): Promise<{ issues: IssueSummary[]; total: number }> {

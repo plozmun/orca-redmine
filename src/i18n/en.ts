@@ -204,7 +204,14 @@ export const en = {
   'notification.agentBlocked': 'Agent on #{id} needs input: {subject}',
   'command.notConfigured': 'Redmine is not configured: open the Redmine panel (flag icon in the right sidebar) and enter the URL and your API key.',
   'command.noIssues': 'You have no open Redmine tasks.',
-  'command.header': '{total} open tasks assigned to you:'
+  'command.header': '{total} open tasks assigned to you:',
+  'command.panelOpened': 'Redmine panel opened.',
+
+  // Status bar (worker: the number is the item's text, these are its tooltip)
+  'statusBar.tooltip': 'Open tasks assigned to you: {total}',
+  'statusBar.overdue': 'overdue: {count}',
+  'statusBar.urgent': 'urgent: {count}',
+  'statusBar.error': 'Redmine: {reason}'
 }
 
 export type MessageKey = keyof typeof en

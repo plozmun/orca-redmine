@@ -3,6 +3,7 @@
 // secrets (OS keychain). Errors are thrown as RedmineError codes for the panel to translate.
 import type { OrcaWorkerApi } from 'orca/worker'
 import { systemLocale, translate } from './i18n'
+import { LaunchedTasks, pathFromCliId, withIssueEnv, withPromptPointer } from './agent-env'
 import { detectRedmineCli, writeContextFile } from './agent-files'
 import { asCommentsMode, buildContextBlock, buildLaunchPrompt, CONTEXT_MAX_CHARS, sendPrompt, workspaceNameFor } from './launch'
 import {
@@ -61,6 +62,7 @@ const COMMENTS_SETTING = 'contextComments'
 const MAX_CHARS_SETTING = 'contextMaxChars'
 const BRANCH_TEMPLATE_SETTING = 'branchTemplate'
 const ON_CREATED_SETTING = 'onWorkspaceCreated'
+const PROMPT_POINTER_SETTING = 'promptPointer'
 /** A hook must answer within 2 s; the Redmine lookup gets this much of it. */
 const HOOK_BUDGET_MS = 1500
 
@@ -219,6 +221,34 @@ async function recordWorkStarted(orca: OrcaWorkerApi, redmine: RedmineClient, is
   orca.panels.post('redmine.issueChanged', { id: issue.id })
 }
 
+/**
+ * The link key of a workspace named in `agent.launch.before`: the `identity:` form carries it; the
+ * CLI form (`<repoId>::<path>`) needs the host listing, by id or path, as `describeCreated` does.
+ * No CLI and no network: an agent start is never slowed down.
+ */
+async function launchWorkspaceKey(orca: OrcaWorkerApi, workspaceId: string | null): Promise<string | null> {
+  if (!workspaceId) return null
+  const key = keyFromHostId(workspaceId)
+  if (key) return key
+  const path = pathFromCliId(workspaceId)
+  if (!path || !orca.host.has('workspace.list')) return null
+  try {
+    const { workspaces } = (await orca.host.call('workspace.list', {})) as { workspaces: HostWorkspaceRow[] }
+    const row = workspaces.find((w) => w.id === workspaceId) ?? workspaces.find((w) => w.path === path)
+    return row ? keyFromHostId(row.id) : null
+  } catch (error) {
+    orca.log(`workspace.list: ${errorParts(error).errorDetail}`)
+    return null
+  }
+}
+
+/** The task linked to an `agent.launch.before` workspace, read from the plugin's storage only. */
+async function linkedTask(orca: OrcaWorkerApi, workspaceId: string | null): Promise<AssignedIssue | null> {
+  const key = await launchWorkspaceKey(orca, workspaceId)
+  if (!key) return null
+  return (await readMap<AssignedIssue>(orca, ISSUE_BY_WORKSPACE))[key] ?? null
+}
+
 export default function activate(orca: OrcaWorkerApi): void {
   /** Workspaces whose work start was already recorded in this run (the event may repeat). */
   const started = new Set<string>()
@@ -238,6 +268,27 @@ export default function activate(orca: OrcaWorkerApi): void {
     } catch (error) {
       orca.log(`workspace.create.before #${id}: ${errorParts(error).errorDetail}`)
     }
+  })
+
+  // Any agent started in a linked workspace gets the task number in its environment, whoever started
+  // it (Orca's new tab, automations, orchestration, the CLI). Local decisions only, no network.
+  const launched = new LaunchedTasks()
+  orca.hooks.on('agent.launch.before', async (event, next) => {
+    const issue = await linkedTask(orca, event.workspaceId)
+    if (!issue) return
+    if (event.terminalId) launched.remember(event.terminalId, issue)
+    return next({ ...event, env: withIssueEnv(event.env, issue.id) })
+  })
+
+  // Optional: name the task in the prompt Orca submits right after launching the agent there.
+  orca.hooks.on('agent.prompt.before', async (event, next) => {
+    if (event.inputKind !== 'launch') return
+    if ((await orca.settings.get(PROMPT_POINTER_SETTING)) !== true) return
+    const issue = launched.taskFor(event.terminalId)
+    if (!issue) return
+    const prompt = withPromptPointer(event.prompt, issue, await savedUrl(orca))
+    if (!prompt) return
+    return next({ ...event, prompt })
   })
 
   // Any new worktree that names a task the user can see gets linked to it, whoever created it.

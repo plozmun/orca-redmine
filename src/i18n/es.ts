@@ -104,7 +104,7 @@ export const es: Messages = {
   'launch.doneAgent': '{agent} lanzado.',
   'launch.assigned': 'Tarea asignada.',
 
-  'agent.cliHint': 'Tienes el CLI `redmine` para leer o actualizar la tarea #{id}.',
+  'agent.cliHint': 'Tienes el CLI `redmine` para leer o actualizar la tarea #{id}. Su número también está en `$REDMINE_ISSUE`.',
   'agent.noCli': 'El agente recibe el texto de la tarea desde el plugin. Para que también pueda comentarla o actualizarla, instala redmine-cli (el comando `redmine`) y su skill para agentes.',
 
   'send.title': 'Enviar al agente',

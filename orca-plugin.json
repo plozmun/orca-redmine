@@ -120,11 +120,24 @@
           "Add a comment",
           "Add a comment and move a new task to the next open status"
         ]
+      },
+      {
+        "key": "promptPointer",
+        "title": "Name the task in launch prompts",
+        "description": "When an agent starts in a workspace linked to a Redmine task, add one line naming the task (number, subject and URL) to the launch prompt Orca submits, unless the prompt already names it. Off by default.",
+        "type": "boolean",
+        "default": false
       }
     ],
     "hooks": [
       {
         "event": "workspace.create.before"
+      },
+      {
+        "event": "agent.launch.before"
+      },
+      {
+        "event": "agent.prompt.before"
       }
     ],
     "events": [

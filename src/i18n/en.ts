@@ -113,7 +113,7 @@ export const en = {
   'launch.assigned': 'Task assigned.',
 
   // What the agent can use besides the prompt
-  'agent.cliHint': 'The `redmine` CLI is available to read or update task #{id}.',
+  'agent.cliHint': 'The `redmine` CLI is available to read or update task #{id}. Its number is also in `$REDMINE_ISSUE`.',
   'agent.noCli': 'The agent gets the task text from the plugin. To let it comment on or update the task itself, install redmine-cli (the `redmine` command) and its agent skill.',
 
   // Send to the current workspace's agent

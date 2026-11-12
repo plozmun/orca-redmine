@@ -81,5 +81,32 @@ export default defineCheck({
         'redmine.issueByWorkspace': { 'wt-1': { id: 4077, subject: 'Checkout screen with saved cards' } }
       }
     }
+  },
+  // Pending follow-ups: an agent that finished, and a linked workspace that was removed.
+  followups: {
+    ...sample,
+    requests: {
+      ...sample.requests,
+      'redmine.followups.get': () => ({
+        followups: [
+          {
+            id: 'agentDone:4077:1',
+            kind: 'agentDone' as const,
+            issueId: 4077,
+            workspaceName: '4077-checkout-screen',
+            at: Date.parse('2026-11-03T07:30:00Z'),
+            hours: 1.25
+          },
+          {
+            id: 'workspaceRemoved:4081:2',
+            kind: 'workspaceRemoved' as const,
+            issueId: 4081,
+            workspaceName: '4081-ios-pass',
+            at: Date.parse('2026-11-03T07:00:00Z')
+          }
+        ]
+      })
+    },
+    persisted: { plugin: { 'redmine.projectByOrcaProject': { 'git:shop': 'shop' } } }
   }
 })

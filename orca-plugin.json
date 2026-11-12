@@ -127,6 +127,23 @@
         "description": "When an agent starts in a workspace linked to a Redmine task, add one line naming the task (number, subject and URL) to the launch prompt Orca submits, unless the prompt already names it. Off by default.",
         "type": "boolean",
         "default": false
+      },
+      {
+        "key": "agentNotification",
+        "title": "Desktop notification when an agent on a task finishes",
+        "description": "Off by default. The follow-up always appears in the Redmine panel; this only adds a desktop notification, with the task number and subject and nothing from the description or comments.",
+        "type": "string",
+        "default": "off",
+        "enum": [
+          "off",
+          "done",
+          "doneAndBlocked"
+        ],
+        "enumLabels": [
+          "Off",
+          "When an agent finishes",
+          "When an agent finishes or needs input"
+        ]
       }
     ],
     "hooks": [
@@ -143,6 +160,12 @@
     "events": [
       {
         "on": "workspace.created"
+      },
+      {
+        "on": "workspace.removed"
+      },
+      {
+        "on": "agent.status.changed"
       }
     ]
   },
@@ -157,7 +180,13 @@
       "kind": "workspace:read"
     },
     {
+      "kind": "agent:read"
+    },
+    {
       "kind": "terminal:send"
+    },
+    {
+      "kind": "notifications:show"
     },
     {
       "kind": "storage:own"

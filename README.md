@@ -24,6 +24,8 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 - **Team branch names** (optional): with a branch template such as `{tracker}/{id}-{slug}`, a new task workspace gets `feature/4077-checkout-with-saved-cards`. If Redmine does not answer within 1.5 s, Orca's branch is kept; a creation is never refused.
 - **The task number in the environment**: every agent started in a linked workspace — Orca's new tab, a workspace creation, an automation, orchestration, the CLI — gets `REDMINE_ISSUE=<number>`, so git hooks, scripts and the agent itself can run `redmine issues get $REDMINE_ISSUE`. The decision uses the local link store only (no Redmine call, so a start is never slowed). Nothing else is exported: no URL, no API key, no file.
 - **Record the start in Redmine** (optional, off by default): a comment naming the workspace and branch, and optionally a move from the first open status (New) to the next one.
+- **Follow-ups after agent work**: when the main agent of a workspace linked to a task finishes (success, failure or Orca could not tell), or when a linked worktree is removed, a follow-up appears at the top of the task list. One click opens the task, comments, changes status, logs time (pre-filled with the agent's working time, rounded to 0.25 h) or dismisses it. **Nothing is written to Redmine without that click**, and follow-ups survive closing the panel and restarting Orca.
+- **Optional notification** (off by default): a desktop notification when an agent on a linked task finishes (`done`) or also when it needs input (`doneAndBlocked`). It names the task number and subject only, never the description or comments.
 - **Launch an agent in a new workspace**: from a task, create a worktree in an Orca project, start an agent with the task context, and assign the task to the new workspace — like Orca does for GitHub, GitLab, Jira and Linear.
 - **Send to agent**: types the task prompt into a terminal of the current workspace. It **does not press Enter**, so you can review it first. A terminal line cannot carry the description and comments, so they go in a file (`<tmp>/orca-redmine/<id>.md`, readable only by you) that the prompt points to.
 - **Works without redmine-cli**: agents get the task text from the plugin. When the [`redmine` CLI](#redmine-cli) is installed, the prompt also tells the agent it can use it to update the task; when it is not, the panel suggests installing it.
@@ -47,6 +49,7 @@ src/orca-workspaces.ts  Locates the focused workspace (host listing, then `orca`
 src/launch.ts           Workspace name and agent prompt for a task
 src/agent-env.ts        `REDMINE_ISSUE` and the optional prompt pointer for agents
 src/task-ref.ts         Task number in a workspace name or branch; branch template
+src/followups.ts        Agent-finish and workspace-removal follow-ups: transitions, working time, store rules
 src/links.ts            Storage keys for workspace ↔ task links
 src/agent-files.ts      Context file for "Send to agent" and the `redmine` CLI check
 src/textile.ts          Textile → Markdown for descriptions and comments
@@ -73,6 +76,7 @@ In Orca: **Settings → Plugins → Redmine**.
 | Branch name for task workspaces          | empty          | Branch template for new workspaces that name a task: `{id}`, `{slug}` (task title), `{tracker}`, `{project}`, lower-cased and made git-safe. Empty keeps Orca's branch. |
 | When a workspace is created for a task   | Nothing        | `Nothing`, `Add a comment` (*Work started in Orca workspace `name` (branch `branch`)*, in the machine's language), or also move a task in the first open status to the next open status. |
 | Name the task in launch prompts          | Off            | When an agent starts in a linked workspace, one line naming the task (`#N`, subject, URL) is appended to the launch prompt Orca submits, unless the prompt already names it. |
+| Notification when an agent finishes      | Off            | `Off`, `When an agent finishes`, or `When an agent finishes or needs input`. The follow-up always appears in the panel; this only adds a desktop notification with the task number and subject. |
 
 Templates accept `{id}`, `{subject}`, `{url}`, `{project}`, `{tracker}`, `{status}`, `{priority}` and `{assignee}`. Empty means a default in Orca's language. For example:
 
@@ -143,8 +147,10 @@ It gives up after 115 s (a panel request waits at most 120 s); a slow repo setup
 | `settings:own`   | Redmine URL and page size (editable in Settings)           |
 | `secrets:own`    | API key, encrypted in the OS keychain                      |
 | `workspace:read` | Name, branch and terminals of the focused workspace        |
+| `agent:read`     | Notice when an agent in a linked workspace finishes or blocks |
 | `terminal:send`  | Type the task prompt into the chosen terminal              |
-| `storage:own`    | Workspace ↔ task links, shared by the panel and the worker |
+| `notifications:show` | Desktop notification when an agent finishes (off by default) |
+| `storage:own`    | Workspace ↔ task links, follow-ups, shared by the panel and the worker |
 
 Hooks and events (Orca waits only for the hook, at most 2 s, and carries on if it fails):
 
@@ -154,8 +160,12 @@ Hooks and events (Orca waits only for the hook, at most 2 s, and carries on if i
 | `workspace.created` event  | Link the new worktree to the task it names; optional comment/status    |
 | `agent.launch.before`      | Add `REDMINE_ISSUE` for an agent started in a linked workspace (link store only, no network) |
 | `agent.prompt.before`      | Optional pointer line in launch prompts (`promptPointer`, off by default) |
+| `agent.status.changed` event | Record a follow-up when the main agent of a linked task finishes      |
+| `workspace.removed` event  | Delete the link of a removed worktree and offer to close the task      |
 
 Environment variables are fixed when the agent starts: re-linking the workspace does not change a running agent's `REDMINE_ISSUE`, and no other variable is added. The launch hook reads only the plugin's link store, so a Redmine that is down never delays a start.
+
+Orca starts the worker when an event arrives, but a moment it never delivered (plugin disabled, Orca closed) is not replayed. Follow-ups live in the plugin's storage, so they are still there the next time the panel opens.
 
 ## Development
 

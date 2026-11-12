@@ -2,6 +2,7 @@
 import { storage } from 'orca'
 import { assert, hostError, mockHost, mount, test } from 'orca/testing'
 import * as panel from './panel'
+import type { Followup } from './followups'
 
 const summary = {
   id: 4077,
@@ -63,6 +64,8 @@ function connectedHost(
         asked.push({ launch: input })
         return { workspaceKey: 'wt-new', displayName: '4077-checkout-screen', branch: 'pablo/4077-checkout-screen', path: '/p', launch: 'terminal', name: '4077-checkout-screen' }
       },
+      'redmine.followups.get': () => ({ followups: [] }),
+      'redmine.followups.dismiss': () => ({ followups: [] }),
       ...extra
     }
   })
@@ -519,5 +522,162 @@ test('a link the worker makes for the focused workspace opens its task', async (
   await storage.set('links.issueByWorkspace', { 'wt-a': { id: 4077, subject: 'Checkout screen' } })
   await view.settled()
   assert.ok(drawn(view, 'Integrate'))
+  await view.unmount()
+})
+
+// --- Follow-ups ---
+
+const followupAt = Date.parse('2026-11-03T08:00:00Z')
+const agentDone: Followup = {
+  id: 'agentDone:4077:1',
+  kind: 'agentDone',
+  issueId: 4077,
+  workspaceName: '4077-checkout',
+  at: followupAt,
+  hours: 1.25
+}
+const workspaceRemoved: Followup = {
+  id: 'workspaceRemoved:4077:2',
+  kind: 'workspaceRemoved',
+  issueId: 4077,
+  workspaceName: '4077-checkout',
+  at: followupAt + 1000
+}
+
+/** Redmine write calls a test records, so it can prove nothing happens without a click. */
+function recordingWrites(writes: unknown[]) {
+  return {
+    'redmine.comment': ((input: unknown) => {
+      writes.push({ comment: input })
+      return detail
+    }) as never,
+    'redmine.setStatus': ((input: unknown) => {
+      writes.push({ status: input })
+      return detail
+    }) as never,
+    'redmine.logTime': ((input: unknown) => {
+      writes.push({ time: input })
+      return { timeEntryId: 10 }
+    }) as never
+  }
+}
+
+/** A host holding follow-ups, whose dismiss actually removes one and records the call. */
+function followupHost(list: Followup[], writes: unknown[], dismissed: string[] = [], extra: Record<string, (input: never) => unknown> = {}) {
+  let current = list
+  return connectedHost([], {
+    ...recordingWrites(writes),
+    'redmine.followups.get': (() => ({ followups: current })) as never,
+    'redmine.followups.dismiss': (({ id }: { id: string }) => {
+      dismissed.push(id)
+      current = current.filter((f) => f.id !== id)
+      return { followups: current }
+    }) as never,
+    ...extra
+  })
+}
+
+test('a pending agent follow-up shows what happened and opens its task without writing anything', async () => {
+  const writes: unknown[] = []
+  const view = await mount(panel, { host: followupHost([agentDone], writes), locale: 'en' })
+  assert.ok(view.find({ text: 'Agent finished on #4077' }))
+  assert.ok(view.find({ text: 'Workspace “4077-checkout”' }))
+  assert.ok(view.find({ text: 'Your agent worked about 1.25 h' }))
+  assert.deepEqual(writes, [])
+
+  await view.press({ text: 'Open task' })
+  assert.ok(view.find({ text: 'Checkout screen' }))
+  assert.deepEqual(writes, [], 'opening the task is not a write')
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('commenting from a follow-up writes the comment and dismisses it', async () => {
+  const writes: unknown[] = []
+  const dismissed: string[] = []
+  const view = await mount(panel, {
+    host: followupHost([agentDone], writes, dismissed, { 'redmine.issues': (() => ({ issues: [summary], total: 1 })) as never }),
+    locale: 'en'
+  })
+  assert.deepEqual(writes, [])
+
+  await view.press({ text: 'Comment' })
+  await view.type({ label: 'Comment' }, 'Merged in !42')
+  await view.press({ text: 'Add comment' })
+  assert.deepEqual(writes, [{ comment: { id: 4077, notes: 'Merged in !42' } }])
+  assert.deepEqual(dismissed, [agentDone.id])
+  assert.equal(view.find({ text: 'Agent finished on #4077' }), null)
+  assert.ok(view.find({ text: 'Comment added' }))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('logging time from a follow-up is pre-filled with the agent working time and dismisses it', async () => {
+  const writes: unknown[] = []
+  const dismissed: string[] = []
+  const view = await mount(panel, { host: followupHost([agentDone], writes, dismissed), locale: 'en' })
+
+  await view.press({ text: 'Log time' })
+  assert.equal(view.valueOf({ label: 'Hours' }), '1.25')
+  await view.press({ text: 'Save time' })
+  assert.deepEqual(writes, [{ time: { id: 4077, hours: 1.25, comments: '' } }])
+  assert.deepEqual(dismissed, [agentDone.id])
+  assert.equal(view.find({ text: 'Agent finished on #4077' }), null)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('close task on a removed workspace offers only closed statuses, then dismisses', async () => {
+  const writes: unknown[] = []
+  const dismissed: string[] = []
+  const view = await mount(panel, {
+    host: followupHost([workspaceRemoved], writes, dismissed, {
+      'redmine.statuses': (() => [
+        { id: 1, name: 'New', isClosed: false },
+        { id: 2, name: 'In progress', isClosed: false },
+        { id: 5, name: 'Closed', isClosed: true }
+      ]) as never
+    }),
+    locale: 'en'
+  })
+  assert.ok(view.find({ text: 'Workspace removed: close #4077?' }))
+
+  await view.press({ text: 'Close task' })
+  assert.equal(view.valueOf({ type: 'Select', label: 'Status' }), '5')
+  assert.ok(drawn(view, '"label":"Closed"'))
+  assert.equal(drawn(view, 'In progress'), false)
+
+  await view.press({ text: 'Close it' })
+  assert.deepEqual(writes, [{ status: { id: 4077, statusId: 5 } }])
+  assert.deepEqual(dismissed, [workspaceRemoved.id])
+  assert.equal(view.find({ text: 'Workspace removed: close #4077?' }), null)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('a follow-up can be dismissed without acting on Redmine', async () => {
+  const writes: unknown[] = []
+  const dismissed: string[] = []
+  const view = await mount(panel, { host: followupHost([agentDone, workspaceRemoved], writes, dismissed), locale: 'en' })
+  assert.ok(view.find({ text: 'Agent finished on #4077' }))
+  assert.ok(view.find({ text: 'Workspace removed: close #4077?' }))
+
+  // Press the first card's Dismiss: it goes away, the other one stays.
+  const dismissButtons = view.findAll({ text: 'Dismiss' })
+  assert.equal(dismissButtons.length, 2)
+  await view.press({ text: 'Dismiss' })
+  assert.deepEqual(writes, [])
+  assert.equal(view.find({ text: 'Agent finished on #4077' }), null)
+  assert.ok(view.find({ text: 'Workspace removed: close #4077?' }))
+  assert.equal(dismissed.length, 1)
+  await view.unmount()
+})
+
+test('the panel shows a follow-up the worker records while it is open, without closing it', async () => {
+  const view = await mount(panel, { host: connectedHost(), locale: 'en' })
+  assert.equal(view.find({ text: 'Agent finished on #4077' }), null)
+  view.post('redmine.followupsChanged', { followups: [agentDone] })
+  await view.settled()
+  assert.ok(view.find({ text: 'Agent finished on #4077' }))
   await view.unmount()
 })

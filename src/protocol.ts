@@ -2,6 +2,7 @@
 // Errors travel as codes (`error.code` on a rejected request, `errorCode` in answers) and the
 // panel translates them with src/i18n; `*Detail` fields carry untranslated detail.
 import type { CommentsMode } from './launch'
+import type { Followup } from './followups'
 import type { CreatedWorktree, LocatedWorkspace } from './orca-workspaces'
 import type { IssueDetail, IssueStatus, IssueSummary, Project, TimeEntry } from './redmine'
 
@@ -68,9 +69,15 @@ declare module 'orca' {
      * panel's language. The context goes in a file (`<tmp>/orca-redmine/<id>.md`) the prompt points to.
      */
     'redmine.sendToAgent': { input: { id: number; terminalId: string; locale: string }; output: { accepted: boolean } }
+    /** Pending follow-ups recorded by the worker when an agent finishes or a linked workspace goes away. */
+    'redmine.followups.get': { output: { followups: Followup[] } }
+    /** Removes one pending follow-up (acted on, or dismissed by the person). */
+    'redmine.followups.dismiss': { input: { id: string }; output: { followups: Followup[] } }
   }
   interface PluginPanelEvents {
     /** After a status change, comment or time entry: open panels reload the issue. */
     'redmine.issueChanged': { id: number }
+    /** After the worker records or dismisses a follow-up: open panels show the new list. */
+    'redmine.followupsChanged': { followups: Followup[] }
   }
 }

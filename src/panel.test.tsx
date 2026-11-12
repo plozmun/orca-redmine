@@ -66,6 +66,7 @@ function connectedHost(
       },
       'redmine.followups.get': () => ({ followups: [] }),
       'redmine.followups.dismiss': () => ({ followups: [] }),
+      'redmine.launchHereSupport': () => ({ available: true }),
       ...extra
     }
   })
@@ -288,6 +289,101 @@ test('suggests the Orca project mapped to the task’s Redmine project', async (
   await view.press({ type: 'ListItem' })
   await view.toggle({ type: 'Collapsible', label: 'Launch agent in a new workspace' })
   assert.equal(pickerValue(view, OP), 'shop')
+  await view.unmount()
+})
+
+test('launches the agent in the focused workspace and assigns it the task when it has none', async () => {
+  const asked: unknown[] = []
+  const view = await mount(panel, {
+    host: connectedHost(asked, {
+      'redmine.launchHere': (input) => {
+        asked.push({ here: input })
+        return { terminalId: 't9', workspaceKey: 'wt-a' }
+      }
+    }),
+    locale: 'en'
+  })
+  await view.emit('workspace.changed', ws('shop-a', [{ id: 't1', title: 'claude' }]))
+  await view.press({ type: 'ListItem' })
+  await view.toggle({ type: 'Collapsible', label: 'Launch agent in the current workspace' })
+  await view.press({ text: 'Launch agent here' })
+  assert.deepEqual(asked.at(-1), {
+    here: {
+      issueId: 4077,
+      agent: 'claude',
+      instructions: 'Work on Redmine task #4077 "Checkout screen": https://redmine.test/issues/4077',
+      locale: 'en',
+      comments: 'recent'
+    }
+  })
+  assert.deepEqual(view.persisted.storage['links.issueByWorkspace'], { 'wt-a': { id: 4077, subject: 'Checkout screen' } })
+  assert.ok(view.find({ text: 'Claude Code started in this workspace. Task assigned.' }))
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
+  await view.unmount()
+})
+
+test('launching here keeps a task the workspace already has', async () => {
+  const view = await mount(panel, {
+    host: connectedHost(
+      [],
+      { 'redmine.launchHere': () => ({ terminalId: 't9', workspaceKey: 'wt-a' }) },
+      {},
+      { 'links.issueByWorkspace': { 'wt-a': { id: 4081, subject: 'Mobile pass' } } }
+    ),
+    locale: 'en'
+  })
+  await view.emit('workspace.changed', ws('shop-a', [{ id: 't1' }]))
+  await view.settled()
+  // The workspace's task opens; go back to the list and open another one.
+  assert.ok(view.find({ text: '← Back' }))
+  await view.press({ text: '← Back' })
+  await view.press({ type: 'ListItem' })
+  await view.toggle({ type: 'Collapsible', label: 'Launch agent in the current workspace' })
+  await view.press({ text: 'Launch agent here' })
+  assert.deepEqual(view.persisted.storage['links.issueByWorkspace'], { 'wt-a': { id: 4081, subject: 'Mobile pass' } })
+  assert.ok(view.find({ text: 'Claude Code started in this workspace.' }))
+  assert.ok(!drawn(view, 'Task assigned.'))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('launch here is disabled without a focused workspace and when this Orca cannot start agents', async () => {
+  // The section's open state is kept, as the `launchHere` check scenario relies on.
+  let view = await mount(panel, { host: connectedHost(), locale: 'en', persisted: { plugin: { 'redmine.hereOpen': true } } })
+  await view.press({ type: 'ListItem' })
+  assert.equal(view.find({ text: 'Launch agent here' })?.disabled, true)
+  assert.ok(drawn(view, 'Open a workspace to launch the agent in it.'))
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+
+  view = await mount(panel, {
+    host: connectedHost([], { 'redmine.launchHereSupport': () => ({ available: false }) }),
+    locale: 'en'
+  })
+  await view.emit('workspace.changed', ws('shop-a', [{ id: 't1' }]))
+  await view.press({ type: 'ListItem' })
+  await view.toggle({ type: 'Collapsible', label: 'Launch agent in the current workspace' })
+  assert.equal(view.find({ text: 'Launch agent here' })?.disabled, true)
+  assert.ok(drawn(view, 'This Orca version cannot launch agents in a workspace: update Orca.'))
+  await view.unmount()
+})
+
+test('a failed launch here shows the translated error and assigns nothing', async () => {
+  const view = await mount(panel, {
+    host: connectedHost([], {
+      'redmine.launchHere': () => {
+        throw hostError('capability_denied', 'agent.launch needs the agent:launch capability')
+      }
+    }),
+    locale: 'es-ES'
+  })
+  await view.emit('workspace.changed', ws('shop-a', [{ id: 't1' }]))
+  await view.press({ type: 'ListItem' })
+  await view.toggle({ type: 'Collapsible', label: 'Lanzar agente en el workspace actual' })
+  await view.press({ text: 'Lanzar agente aquí' })
+  assert.ok(view.find({ text: 'Orca no dejó al plugin lanzar agentes: aprueba sus permisos' }))
+  assert.deepEqual(view.persisted.storage['links.issueByWorkspace'], {})
   await view.unmount()
 })
 

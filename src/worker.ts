@@ -10,6 +10,7 @@ import {
   clearOrcaCache,
   createWorktree,
   describeWorktree,
+  findWorkspaceId,
   listOrca,
   keyFromHostId,
   matchHostWorkspace,
@@ -22,6 +23,7 @@ import {
   type HostWorkspaceRow,
   type OrcaListing
 } from './orca-workspaces'
+import { contextFilePrompt, fitsLaunchPrompt } from './launch-here'
 import type { ConnectionStatus } from './protocol'
 import { normalizeBaseUrl, projectSubtree, RedmineClient, RedmineError, type IssueDetail } from './redmine'
 import { branchFromTemplate, taskRefFromWorkspace } from './task-ref'
@@ -144,6 +146,18 @@ async function hostWorkspaceMatch(orca: OrcaWorkerApi, context: FocusedContext):
     if (!key) return null
     const row = workspaces.find((w) => keyFromHostId(w.id) === key)
     return { key, id: row?.id ?? `identity:${key}`, path: row?.path ?? null }
+  } catch (error) {
+    orca.log(`workspace.list: ${errorParts(error).errorDetail}`)
+    return null
+  }
+}
+
+/** The focused workspace's id from `workspace.list`: what `agent.launch` (and Orca's other methods) take. */
+async function hostWorkspaceId(orca: OrcaWorkerApi, context: FocusedContext): Promise<string | null> {
+  if (!orca.host.has('workspace.list')) return null
+  try {
+    const { workspaces } = (await orca.host.call('workspace.list', {})) as { workspaces: HostWorkspaceRow[] }
+    return findWorkspaceId(workspaces, context)
   } catch (error) {
     orca.log(`workspace.list: ${errorParts(error).errorDetail}`)
     return null
@@ -652,6 +666,31 @@ export default function activate(orca: OrcaWorkerApi): void {
     })
     // No Enter: the person reviews the text in the terminal before submitting it.
     return orca.host.call('terminal.sendText', { terminalId, text, enter: false })
+  })
+
+  orca.panels.handle('redmine.launchHereSupport', async () => ({ available: orca.host.has('agent.launch') }))
+
+  orca.panels.handle('redmine.launchHere', async (input) => {
+    if (!orca.host.has('agent.launch')) throw new RedmineError('agent_launch_unavailable', 'agent.launch')
+    const context = await orca.host.call('workspace.readContext', {})
+    if (!context) throw new RedmineError('no_workspace', 'no focused workspace')
+    const workspaceId = await hostWorkspaceId(orca, context)
+    if (!workspaceId) throw new RedmineError('workspace_not_listed', context.displayName)
+    const issue = await (await client(orca)).getIssue(input.issueId)
+    // Same text as a new-workspace launch; `agent.launch` caps it, so a long one moves the context to a file.
+    const options = await contextOptions(orca)
+    const comments = input.comments ?? options.comments
+    const redmineCliHere = Boolean(await redmineCli())
+    const full = buildLaunchPrompt(issue, input.instructions, input.locale, { ...options, comments, redmineCli: redmineCliHere })
+    let prompt = full
+    if (!fitsLaunchPrompt(full)) {
+      const contextFile = await writeContextFile(issue.id, buildContextBlock(issue, { ...options, comments }), contextDir)
+      prompt = contextFilePrompt(issue, input.instructions, input.locale, { contextFile, redmineCli: redmineCliHere })
+      orca.log(`launchHere #${issue.id}: prompt too long, context in ${contextFile}`)
+    }
+    const launched = await orca.host.call('agent.launch', { workspaceId, agent: input.agent, prompt })
+    orca.log(`launchHere #${issue.id} -> ${workspaceId} (${input.agent})`)
+    return { terminalId: launched.terminalId, workspaceKey: keyFromHostId(workspaceId) }
   })
 
   // Command palette. No panel asked, so it answers in the machine's language.

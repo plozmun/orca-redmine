@@ -165,6 +165,10 @@ const launchActivate = atom('redmine.activate', true, { persist: 'plugin' })
 const launchBase = atom('')
 const launchInstructions = atom('')
 const launchComments = atom<CommentsMode>('recent')
+/** Whether this Orca can start an agent in a workspace (`agent.launch`); null until the worker says. */
+const launchHereAvailable = atom<boolean | null>(null)
+/** "Launch agent here" stays open once the person opens it, like the other sections keep their place. */
+const hereOpen = atom('redmine.hereOpen', false, { persist: 'plugin' })
 
 // Plugin settings (Settings → Plugins → Redmine), read once and kept current.
 const instructionsTemplate = atom<string | null>(null)
@@ -494,6 +498,33 @@ function launchWorkspace(issue: IssueDetail): Promise<void> {
   })
 }
 
+/**
+ * Starts the chosen agent in a new terminal of the focused workspace, with the same prompt as a
+ * new-workspace launch. The worker resolves the workspace id from the host's listing.
+ */
+function launchHere(issue: IssueDetail): Promise<void> {
+  return run(async () => {
+    // `agent.launch` needs a real agent: "no agent" is not an option here.
+    const agent = read(launchAgent) === NO_AGENT ? AGENTS[0].value : read(launchAgent)
+    const answer = await plugin.request('redmine.launchHere', {
+      issueId: issue.id,
+      agent,
+      instructions: read(launchInstructions),
+      locale: env.locale,
+      comments: read(launchComments)
+    })
+    const label = AGENTS.find((a) => a.value === agent)?.label ?? agent
+    // Assign only a workspace without a task: another task's link stays as it is.
+    const key = answer.workspaceKey ?? read(located)?.workspaceKey
+    if (key && !read(issueByWorkspace)[key]) {
+      update(issueByWorkspace, (map) => (map[key] ? map : { ...map, [key]: { id: issue.id, subject: issue.subject } }))
+      set(notice, `${t('here.done', { agent: label })} ${t('launch.assigned')}`)
+    } else {
+      set(notice, t('here.done', { agent: label }))
+    }
+  })
+}
+
 function assignById(id: number): Promise<void> {
   return run(async () => {
     assignIssue(await plugin.request('redmine.issue', { id }))
@@ -579,6 +610,11 @@ export function setup(ctx: PanelContext): void {
   void plugin.request('redmine.status').then(afterConnect, (e) => set(error, errorText(e)))
   // Only for a hint: on failure, say nothing.
   void plugin.request('redmine.cli').then(({ version }) => set(redmineCli, version), () => undefined)
+  // The panel's own `host.has` is surface-scoped (`agent.launch` is a worker method), so the worker answers.
+  void plugin.request('redmine.launchHereSupport').then(
+    ({ available }) => set(launchHereAvailable, available),
+    () => set(launchHereAvailable, false)
+  )
 }
 
 function ConnectForm() {
@@ -1125,6 +1161,61 @@ function LaunchSection({ issue }: { issue: IssueDetail }) {
   )
 }
 
+/**
+ * "Launch agent here": starts an agent in a new terminal of the focused workspace, with the same
+ * instructions and context a new-workspace launch gets. Disabled without a workspace or when the
+ * host cannot start agents; both say why.
+ */
+function HereSection({ issue }: { issue: IssueDetail }) {
+  const available = read(launchHereAvailable)
+  const ws = read(workspace)
+  const agent = read(launchAgent) === NO_AGENT ? AGENTS[0].value : read(launchAgent)
+  return (
+    <Collapsible
+      title={t('here.title')}
+      description={t('here.subtitle')}
+      open={read(hereOpen)}
+      onChange={(open) => set(hereOpen, open)}
+    >
+      <Stack gap="sm">
+        <Select label={t('launch.agent')} value={agent} options={AGENTS} onChange={(v) => set(launchAgent, v)} />
+        <Textarea
+          label={t('launch.instructions')}
+          rows={3}
+          value={read(launchInstructions)}
+          onChange={(v) => set(launchInstructions, v)}
+        />
+        <Select
+          label={t('launch.comments')}
+          value={read(launchComments)}
+          options={[
+            { value: 'none', label: t('launch.commentsNone') },
+            { value: 'recent', label: t('launch.commentsRecent', { count: Math.min(RECENT_COMMENTS, issue.journals.length) }) },
+            { value: 'all', label: t('launch.commentsAll', { count: issue.journals.length }) }
+          ]}
+          onChange={(v) => set(launchComments, asCommentsMode(v))}
+        />
+        <Button tone="accent" icon="agent" disabled={read(busy) || !ws || available !== true} onPress={() => launchHere(issue)}>
+          {t('here.submit')}
+        </Button>
+        {!ws ? (
+          <Text muted size="xs">
+            {t('here.noWorkspace')}
+          </Text>
+        ) : available === false ? (
+          <Text muted size="xs">
+            {t('here.unsupported')}
+          </Text>
+        ) : (
+          <Text muted size="xs">
+            {t('launch.contextHint')}
+          </Text>
+        )}
+      </Stack>
+    </Collapsible>
+  )
+}
+
 function hoursText(hours: number): string {
   return t('time.hours.value', { hours: Number(hours.toFixed(2)) })
 }
@@ -1276,6 +1367,7 @@ function IssueView({ issue }: { issue: IssueDetail }) {
           </Text>
         ) : null}
         <LaunchSection issue={issue} />
+        <HereSection issue={issue} />
         <Collapsible title={t('send.title')} description={t('send.subtitle')}>
           <Stack gap="sm">
             {ws && ws.terminals.length > 0 ? (

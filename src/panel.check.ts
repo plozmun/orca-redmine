@@ -33,7 +33,7 @@ const detail = {
 }
 
 const sample = {
-  capabilities: ['workspace:read', 'settings:own', 'secrets:own', 'terminal:send', 'storage:own'],
+  capabilities: ['workspace:read', 'settings:own', 'secrets:own', 'terminal:send', 'storage:own', 'agent:launch'],
   requests: {
     'redmine.status': () => ({ configured: true, url: 'https://redmine.example.com', user: { login: 'ana', name: 'Ana García' } }),
     'redmine.issues': () => ({ issues, total: 12 }),
@@ -46,7 +46,8 @@ const sample = {
     'redmine.locateWorkspace': () => ({
       located: { workspaceKey: 'wt-1', orcaProjectId: 'git:shop', orcaProjectName: 'shop' }
     }),
-    'redmine.orcaProjects': () => [{ id: 'git:shop', name: 'shop' }]
+    'redmine.orcaProjects': () => [{ id: 'git:shop', name: 'shop' }],
+    'redmine.launchHereSupport': () => ({ available: true })
   },
   events: [
     {
@@ -108,5 +109,16 @@ export default defineCheck({
       })
     },
     persisted: { plugin: { 'redmine.projectByOrcaProject': { 'git:shop': 'shop' } } }
+  },
+  // The same task with "Launch agent here" open: the button, its disabled states and its hints.
+  launchHere: {
+    ...sample,
+    persisted: {
+      plugin: {
+        'redmine.projectByOrcaProject': { 'git:shop': 'shop' },
+        'redmine.issueByWorkspace': { 'wt-1': { id: 4077, subject: 'Checkout screen with saved cards' } },
+        'redmine.hereOpen': true
+      }
+    }
   }
 })

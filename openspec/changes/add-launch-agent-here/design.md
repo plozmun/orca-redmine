@@ -15,7 +15,7 @@
 - **Workspace id from `workspace.list`.** Match the focused context by name + branch (same rule as `matchWorktree`) against `workspace.list` (needs only `workspace:read`, already granted). Alternative: use the CLI row's `id` — kept as fallback if the two ids turn out identical, which would let us reuse the cached listing. Verify on a dev load which id `agent.launch` accepts.
 - **Prompt reuse.** Use `buildLaunchPrompt` with the panel's instructions field and comments mode, so both launches give the agent identical text. `agent.launch` caps `prompt` at 4096 characters (checked in Orca 1.4.257's host schema) and `agent` must be a TUI agent id Orca knows. When the prompt is longer, write the task context with `writeContextFile` (as Send to agent does) and send the instructions plus a pointer to that file instead of the inline context.
 - **Assignment in the panel.** The panel assigns the task (it owns `issueByWorkspace`), only if empty, after the worker reports success.
-- **Capability gating in UI.** `orca.host.has('agent.launch')` hides the button on hosts without it.
+- **Capability gating in UI.** A panel's `host.has(method)` answers for the panel's own surface, and `agent.launch` is a worker method, so the panel asks the worker (`redmine.launchHereSupport`) once and disables the button when the answer is false (hint: update Orca).
 
 ## Risks / Trade-offs
 

@@ -190,6 +190,9 @@
     },
     {
       "kind": "storage:own"
+    },
+    {
+      "kind": "agent:launch"
     }
   ]
 }

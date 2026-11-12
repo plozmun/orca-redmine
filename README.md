@@ -6,7 +6,7 @@ An Orca plugin (`plozmun.redmine-tasks`) that brings your Redmine tasks into the
 
 ## Install
 
-Requires Orca 1.4.246 or newer.
+Requires Orca 1.4.248 or newer.
 
 - From Orca's plugin catalog: search for **Redmine** (listing: https://www.onorca.dev/plugins/plozmun/orca-redmine).
 - Or from a local clone, for development: `orca plugin dev load <path-to-clone>`.
@@ -27,6 +27,7 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 - **Follow-ups after agent work**: when the main agent of a workspace linked to a task finishes (success, failure or Orca could not tell), or when a linked worktree is removed, a follow-up appears at the top of the task list. One click opens the task, comments, changes status, logs time (pre-filled with the agent's working time, rounded to 0.25 h) or dismisses it. **Nothing is written to Redmine without that click**, and follow-ups survive closing the panel and restarting Orca.
 - **Optional notification** (off by default): a desktop notification when an agent on a linked task finishes (`done`) or also when it needs input (`doneAndBlocked`). It names the task number and subject only, never the description or comments.
 - **Launch an agent in a new workspace**: from a task, create a worktree in an Orca project, start an agent with the task context, and assign the task to the new workspace — like Orca does for GitHub, GitLab, Jira and Linear.
+- **Launch an agent here**: starts the chosen agent in a new terminal of the current workspace with the same instructions and context, and assigns the task to it when it has none. If the prompt would exceed Orca's 4,096-character limit, the context goes in the file *Send to agent* uses and the prompt points to it.
 - **Send to agent**: types the task prompt into a terminal of the current workspace. It **does not press Enter**, so you can review it first. A terminal line cannot carry the description and comments, so they go in a file (`<tmp>/orca-redmine/<id>.md`, readable only by you) that the prompt points to.
 - **Works without redmine-cli**: agents get the task text from the plugin. When the [`redmine` CLI](#redmine-cli) is installed, the prompt also tells the agent it can use it to update the task; when it is not, the panel suggests installing it.
 - **Command palette**: `Redmine: my open tasks`.
@@ -36,7 +37,7 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 
 1. Open the Redmine panel and connect with the URL and your API key (*My account → API access key*). The key is validated, then stored encrypted in the OS keychain.
 2. In a workspace, pick the Redmine project for its Orca project.
-3. Open a task and either **assign it to this workspace**, or **launch an agent in a new workspace** for it.
+3. Open a task and either **assign it to this workspace**, **launch an agent in a new workspace** for it, or **launch an agent here** to work in the workspace you are in.
 4. When done: change the status, log the time, and leave a comment with the PR/MR link.
 
 ## Layout
@@ -48,6 +49,7 @@ src/redmine.ts          Redmine REST API client (no Orca dependency)
 src/orca-workspaces.ts  Locates the focused workspace (host listing, then `orca` CLI) and creates worktrees
 src/launch.ts           Workspace name and agent prompt for a task
 src/agent-env.ts        `REDMINE_ISSUE` and the optional prompt pointer for agents
+src/launch-here.ts      Prompt for "Launch agent here" when the context does not fit inline
 src/task-ref.ts         Task number in a workspace name or branch; branch template
 src/followups.ts        Agent-finish and workspace-removal follow-ups: transitions, working time, store rules
 src/links.ts            Storage keys for workspace ↔ task links
@@ -58,7 +60,7 @@ src/protocol.ts         Typed panel <-> worker contract
 src/worker.ts           Node worker: network, secrets, CLI, terminal, palette command
 src/panel.tsx           Orca components panel (TSX, no build step)
 src/**/*.test.ts(x)     Tests (`orca plugin test`)
-src/panel.check.ts      Scenarios for `orca plugin check` (`list` and `detail` use sample data, for `orca plugin shot . --scenario`)
+src/panel.check.ts      Scenarios for `orca plugin check` (`list`, `detail` and `launchHere` use sample data, for `orca plugin shot . --scenario`)
 ```
 
 ## Settings
@@ -109,7 +111,7 @@ Agents started in a linked workspace also find the task number in `REDMINE_ISSUE
 
 ## How the plugin knows a workspace's project
 
-The plugin API gives the focused workspace's name, branch and terminals. The worker matches the worktree by name and branch in Orca's `workspace.list` to get its stable id, which is what tasks are linked to. Orca's plugin API does not say which Orca project a workspace belongs to, so for that the worker runs `orca worktree list` and `orca project list` (cached for 15 s). If the CLI is not on the worker's PATH, set `ORCA_CLI`. Without the CLI, linked tasks and the branch suggestion still work; only the Redmine project filter and creating workspaces need it. On Orca versions without `workspace.list`, the CLI is used for the stable id too.
+The plugin API gives the focused workspace's name, branch and terminals. The worker matches the worktree by name and branch in Orca's `workspace.list` to get its stable id, which is what tasks are linked to. That host id (`identity:<key>`) is also what Orca's workspace methods take, so *Launch agent here* finds the focused workspace without the CLI. Orca's plugin API does not say which Orca project a workspace belongs to, so for that the worker runs `orca worktree list` and `orca project list` (cached for 15 s). If the CLI is not on the worker's PATH, set `ORCA_CLI`. Without the CLI, linked tasks and the branch suggestion still work; only the Redmine project filter and creating workspaces need it. On Orca versions without `workspace.list`, the CLI is used for the stable id too.
 
 Mappings (Orca project → Redmine project, workspace → task) live in the plugin's storage (`storage:own`), shared by the panel and the worker; 0.1.x kept them in the panel only and they are copied over once. Orca rejects Redmine URLs in `orca reference`, so they do not appear as native workspace links.
 
@@ -150,6 +152,7 @@ It gives up after 115 s (a panel request waits at most 120 s); a slow repo setup
 | `agent:read`     | Notice when an agent in a linked workspace finishes or blocks |
 | `terminal:send`  | Type the task prompt into the chosen terminal              |
 | `notifications:show` | Desktop notification when an agent finishes (off by default) |
+| `agent:launch`   | Start an agent in a new terminal of the current workspace  |
 | `storage:own`    | Workspace ↔ task links, follow-ups, shared by the panel and the worker |
 
 Hooks and events (Orca waits only for the hook, at most 2 s, and carries on if it fails):

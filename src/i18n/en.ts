@@ -134,6 +134,14 @@ export const en = {
   'launch.doneAgent': '{agent} launched.',
   'launch.assigned': 'Task assigned.',
 
+  // Launch in the current workspace
+  'here.title': 'Launch agent in the current workspace',
+  'here.subtitle': 'Starts the agent in a new terminal here, with the same instructions and context',
+  'here.submit': 'Launch agent here',
+  'here.done': '{agent} started in this workspace.',
+  'here.noWorkspace': 'Open a workspace to launch the agent in it.',
+  'here.unsupported': 'This Orca version cannot launch agents in a workspace: update Orca.',
+
   // What the agent can use besides the prompt
   'agent.cliHint': 'The `redmine` CLI is available to read or update task #{id}. Its number is also in `$REDMINE_ISSUE`.',
   'agent.noCli': 'The agent gets the task text from the plugin. To let it comment on or update the task itself, install redmine-cli (the `redmine` command) and its agent skill.',
@@ -184,6 +192,12 @@ export const en = {
   'errors.need_hours': 'Enter the hours, e.g. 1.5',
   'errors.need_status': 'Choose a status',
   'errors.no_terminals': 'The current workspace has no terminals',
+  'errors.no_workspace': 'Open a workspace to launch the agent in it',
+  'errors.agent_launch_unavailable': 'This Orca version cannot launch agents in a workspace: update Orca',
+  'errors.capability_denied': 'Orca did not let the plugin start agents: approve its permissions',
+  'errors.unknown_method': 'This Orca version does not offer that action',
+  'errors.invalid_params': 'Orca refused the request: unknown agent or prompt too long',
+  'errors.action_failed': 'Orca could not start the agent ({detail})',
 
   // Command palette and notifications (worker; the machine's language)
   'notification.agentDone': '#{id} Agent finished: {subject}',

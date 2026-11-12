@@ -6,7 +6,7 @@
 
 ## 2. Worker
 
-- [ ] 2.1 Add `contributes.events` (`agent.status.changed`, `workspace.removed`), capabilities `agent:read` and `notifications:show`, setting `agentNotification` (`off` default); verify `orca plugin validate .` and that there are at most 4 events in total
+- [ ] 2.1 Add `contributes.events` (`agent.status.changed`, `workspace.removed`), capabilities `agent:read` and `notifications:show`, setting `agentNotification` (`off` default); verify `orca plugin validate .` and that there are at most 5 events in total (the limit is 5 since Orca 1.4.256)
 - [ ] 2.2 Add `redmine.followups.get` / `redmine.followups.dismiss` and the `redmine.followupsChanged` event to `src/protocol.ts`; implement the storage-backed store in `src/worker.ts`; test get/dismiss/cap in `src/worker.test.ts`
 - [ ] 2.3 Handle `agent.status.changed` via the shared link store; verify with `mountWorker(...)` events for linked/unlinked, each outcome, null `workspaceId`, and that no Redmine write request is made
 - [ ] 2.4 Handle `workspace.removed`: delete the link and record the follow-up; verify linked and unlinked cases

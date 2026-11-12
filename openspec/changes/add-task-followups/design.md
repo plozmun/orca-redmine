@@ -2,7 +2,7 @@
 
 ## Context
 
-`agent.status.changed` payload: `{ workspaceId | null, paneKey, terminalId?, title?, state, receivedAt, mainAgent?: { state, outcome?, stateStartedAt } }`. It needs `agent:read` and an entry in `contributes.events` (at most 4 events; this change uses 2, and `add-workspace-create-hooks` uses `workspace.created`: 3 of 4). `workspace.removed` payload: `{ workspaceId, kind, path }`, worktrees only. Links live in worker storage keyed by the workspace's stable key (`add-workspace-create-hooks`). The worker only runs while something keeps it alive; with `statusBarItems` (`add-status-bar-counter`) it runs while the plugin is enabled, and event delivery starts it otherwise.
+`agent.status.changed` payload: `{ workspaceId | null, paneKey, terminalId?, title?, state, receivedAt, mainAgent?: { state, outcome?, stateStartedAt } }`. It needs `agent:read` and an entry in `contributes.events` (at most 5 events since Orca 1.4.256; this change uses 2, and `add-workspace-create-hooks` uses `workspace.created`: 3 of 5). `workspace.removed` payload: `{ workspaceId, kind, path }`, worktrees only. Links live in worker storage keyed by the workspace's stable key (`add-workspace-create-hooks`). The worker only runs while something keeps it alive; with `statusBarItems` (`add-status-bar-counter`) it runs while the plugin is enabled, and event delivery starts it otherwise.
 
 ## Goals / Non-Goals
 

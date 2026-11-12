@@ -13,7 +13,7 @@
 ## Decisions
 
 - **Workspace id from `workspace.list`.** Match the focused context by name + branch (same rule as `matchWorktree`) against `workspace.list` (needs only `workspace:read`, already granted). Alternative: use the CLI row's `id` — kept as fallback if the two ids turn out identical, which would let us reuse the cached listing. Verify on a dev load which id `agent.launch` accepts.
-- **Prompt reuse.** Use `buildLaunchPrompt` with the panel's instructions field and comments mode, so both launches give the agent identical text. The prompt goes inline (not a file) because `agent.launch` submits it to the agent, not to a shell line.
+- **Prompt reuse.** Use `buildLaunchPrompt` with the panel's instructions field and comments mode, so both launches give the agent identical text. `agent.launch` caps `prompt` at 4096 characters (checked in Orca 1.4.257's host schema) and `agent` must be a TUI agent id Orca knows. When the prompt is longer, write the task context with `writeContextFile` (as Send to agent does) and send the instructions plus a pointer to that file instead of the inline context.
 - **Assignment in the panel.** The panel assigns the task (it owns `issueByWorkspace`), only if empty, after the worker reports success.
 - **Capability gating in UI.** `orca.host.has('agent.launch')` hides the button on hosts without it.
 
@@ -26,4 +26,4 @@
 
 ## Open Questions
 
-- ~~Whether `workspace.list` ids equal `orca worktree list` ids/`identity.key`.~~ Answered in `use-host-workspace-list`: `workspace.list` returns `id: "identity:" + identity.key` (checked 2026-11-10 on Orca 1.4.255: 38 of 38 local worktrees matched the CLI's `identity.key` and display name; listing not truncated). Still open: that `agent.launch` accepts this same `id` (expected, both are host API 1.3).
+- ~~Whether `workspace.list` ids equal `orca worktree list` ids/`identity.key`.~~ Answered in `use-host-workspace-list`: `workspace.list` returns `id: "identity:" + identity.key` (checked 2026-11-10 on Orca 1.4.255: 38 of 38 local worktrees matched the CLI's `identity.key` and display name; listing not truncated). Orca 1.4.257's host schema documents the `workspace.list` id as "what every other workspace method takes", so `agent.launch` takes the `identity:` form. Still to confirm on a dev load.

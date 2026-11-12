@@ -81,5 +81,13 @@ export default defineCheck({
         'redmine.issueByWorkspace': { 'wt-1': { id: 4077, subject: 'Checkout screen with saved cards' } }
       }
     }
+  },
+  // The status bar item the worker keeps up to date (`orca plugin shot . --scenario statusBar
+  // --status-bar`). Redmine itself is unreachable here, so the item draws its warning state: the
+  // count needs a live Redmine, which `check` never asks for.
+  statusBar: {
+    ...sample,
+    settings: { url: 'http://127.0.0.1:9', statusBar: true, statusBarMinutes: 5 },
+    secrets: { apiKey: 'x' }
   }
 })

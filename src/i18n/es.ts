@@ -152,5 +152,11 @@ export const es: Messages = {
 
   'command.notConfigured': 'Redmine no está configurado: abre el panel Redmine (icono de bandera en la barra lateral derecha) e introduce la URL y tu API key.',
   'command.noIssues': 'No tienes tareas abiertas en Redmine.',
-  'command.header': '{total} tareas abiertas asignadas a ti:'
+  'command.header': '{total} tareas abiertas asignadas a ti:',
+  'command.panelOpened': 'Panel de Redmine abierto.',
+
+  'statusBar.tooltip': 'Tareas abiertas asignadas a ti: {total}',
+  'statusBar.overdue': 'vencidas: {count}',
+  'statusBar.urgent': 'urgentes: {count}',
+  'statusBar.error': 'Redmine: {reason}'
 }

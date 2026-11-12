@@ -6,7 +6,7 @@ An Orca plugin (`plozmun.redmine-tasks`) that brings your Redmine tasks into the
 
 ## Install
 
-Requires Orca 1.4.246 or newer.
+Requires Orca 1.4.248 or newer.
 
 - From Orca's plugin catalog: search for **Redmine** (listing: https://www.onorca.dev/plugins/plozmun/orca-redmine).
 - Or from a local clone, for development: `orca plugin dev load <path-to-clone>`.
@@ -27,6 +27,7 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 - **Send to agent**: types the task prompt into a terminal of the current workspace. It **does not press Enter**, so you can review it first. A terminal line cannot carry the description and comments, so they go in a file (`<tmp>/orca-redmine/<id>.md`, readable only by you) that the prompt points to.
 - **Works without redmine-cli**: agents get the task text from the plugin. When the [`redmine` CLI](#redmine-cli) is installed, the prompt also tells the agent it can use it to update the task; when it is not, the panel suggests installing it.
 - **Command palette**: `Redmine: my open tasks`.
+- **Status bar count**: the number of open tasks assigned to you, beside a flag, with the Redmine panel one press away. Amber when one is overdue, red when one is above the default priority; hover for the counts. It refreshes every few minutes, right after the panel changes a task, and is hidden while Redmine is not connected or you turn it off in Settings. The worker therefore runs for as long as the plugin is enabled.
 - **English and Spanish UI**, following Orca's language.
 
 ## Usage
@@ -45,12 +46,13 @@ src/redmine.ts          Redmine REST API client (no Orca dependency)
 src/orca-workspaces.ts  Locates the focused workspace (host listing, then `orca` CLI) and creates worktrees
 src/launch.ts           Workspace name and agent prompt for a task
 src/task-ref.ts         Task number in a workspace name or branch; branch template
+src/plugin-key.ts       Which qualified plugin key (catalog or dev folder) the worker has
 src/links.ts            Storage keys for workspace ↔ task links
 src/agent-files.ts      Context file for "Send to agent" and the `redmine` CLI check
 src/textile.ts          Textile → Markdown for descriptions and comments
 src/i18n/               Translations: en.ts (source), es.ts, index.ts (translate, locale resolution)
 src/protocol.ts         Typed panel <-> worker contract
-src/worker.ts           Node worker: network, secrets, CLI, terminal, palette command
+src/worker.ts           Node worker: network, secrets, CLI, terminal, status bar, commands
 src/panel.tsx           Orca components panel (TSX, no build step)
 src/**/*.test.ts(x)     Tests (`orca plugin test`)
 src/panel.check.ts      Scenarios for `orca plugin check` (`list` and `detail` use sample data, for `orca plugin shot . --scenario`)
@@ -70,6 +72,8 @@ In Orca: **Settings → Plugins → Redmine**.
 | Maximum context size (characters)        | 12000          | Cap for the context block; when the history does not fit, the oldest comments are left out first.              |
 | Branch name for task workspaces          | empty          | Branch template for new workspaces that name a task: `{id}`, `{slug}` (task title), `{tracker}`, `{project}`, lower-cased and made git-safe. Empty keeps Orca's branch. |
 | When a workspace is created for a task   | Nothing        | `Nothing`, `Add a comment` (*Work started in Orca workspace `name` (branch `branch`)*, in the machine's language), or also move a task in the first open status to the next open status. |
+| Show my open tasks in the status bar     | On             | The count beside the flag in Orca's status bar. Off hides the item and stops its refresh.                                                       |
+| Refresh the status bar count every       | 5 minutes      | 1–60 minutes. The count also refreshes right after the panel changes a task or saves the connection.                                            |
 
 Templates accept `{id}`, `{subject}`, `{url}`, `{project}`, `{tracker}`, `{status}`, `{priority}` and `{assignee}`. Empty means a default in Orca's language. For example:
 
@@ -147,6 +151,8 @@ Hooks and events (Orca waits only for the hook, at most 2 s, and carries on if i
 | -------------------------- | ----------------------------------------------------------------------- |
 | `workspace.create.before`  | Apply the branch template (only when one is set)                        |
 | `workspace.created` event  | Link the new worktree to the task it names; optional comment/status    |
+
+The status bar item is why the worker keeps running while the plugin is enabled, instead of only when the panel or a command asks. It counts with `limit=1` Redmine queries (three, plus one for the priority list once per run) on the configured interval and after the panel changes something; pressing it runs `orca plugin open <plugin-key> --panel redmine`, so it needs the `orca` CLI on the worker's PATH like the project lookups do.
 
 ## Development
 

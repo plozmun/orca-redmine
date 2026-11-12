@@ -1,8 +1,13 @@
 // Runs src/worker.ts's activate(orca) over a mock host, with `fetch` and the Orca CLI stubbed.
 import { afterEach, assert, mockHost, mountWorker, test } from 'orca/testing'
+import { systemLocale, translate } from './i18n'
+import { runOrcaJson } from './orca-workspaces'
+import { resetRedmineCaches } from './redmine'
 import * as main from './worker'
 
 const realFetch = globalThis.fetch
+/** Set by the status bar tests' fake interval timers, restored after each test. */
+let stopFakeTimers: (() => void) | null = null
 
 function stubFetch(routes: Record<string, unknown>) {
   const calls: { url: string; method: string; body?: string }[] = []
@@ -17,10 +22,16 @@ function stubFetch(routes: Record<string, unknown>) {
 
 afterEach(() => {
   globalThis.fetch = realFetch
+  resetRedmineCaches()
+  stopFakeTimers?.()
+  stopFakeTimers = null
+  main.setOrcaRunner((args) => runOrcaJson(args))
 })
 
 const configured = {
-  settings: { url: 'https://redmine.test', limit: 50 },
+  // The status bar is off here so the count refresh does not interleave with these requests;
+  // its own tests below turn it on.
+  settings: { url: 'https://redmine.test', limit: 50, statusBar: false },
   secrets: { apiKey: 'KEY' }
 }
 const issue = {
@@ -111,7 +122,7 @@ test('types the task prompt into the terminal in the panel language, without Ent
 
 test('palette command lists my tasks', async () => {
   stubFetch({ '/issues.json': { issues: [issue], total_count: 1 } })
-  const worker = await mountWorker(main, { host: mockHost(configured), commands: ['redmine.myIssues'] })
+  const worker = await mountWorker(main, { host: mockHost(configured), commands: ['redmine.myIssues', 'redmine.openPanel'] })
   const text = await worker.command('redmine.myIssues')
   assert.match(String(text), /#77 \[New\] Checkout screen \(Shop\)/)
   await worker.deactivate()
@@ -529,4 +540,292 @@ test('without a stable key for the created workspace nothing is linked', async (
   assert.equal(links(), undefined)
   assert.ok(worker.logs.some((l) => l.startsWith('workspace.created: no link key')))
   await worker.deactivate()
+})
+
+// --- Status bar: my open task count, its tone and what the press does ---
+
+const priorities = {
+  issue_priorities: [
+    { id: 1, name: 'Low' },
+    { id: 2, name: 'Normal' },
+    { id: 3, name: 'High' }
+  ]
+}
+
+function jsonReply(body: unknown, status = 200) {
+  return { ok: status < 400, status, text: async () => (status === 204 ? '' : JSON.stringify(body)) }
+}
+
+/** Redmine answering each status bar count by its filter. `counts` is read on every request. */
+function statusBarRedmine(initial: { total: number; overdue?: number; urgent?: number }) {
+  const counts = { overdue: 0, urgent: 0, ...initial }
+  const requests: string[] = []
+  globalThis.fetch = (async (url: string) => {
+    requests.push(url)
+    const parsed = new URL(url)
+    if (parsed.pathname === '/enumerations/issue_priorities.json') return jsonReply(priorities)
+    const params = parsed.searchParams
+    const which = params.get('due_date') ? 'overdue' : params.get('priority_id') ? 'urgent' : 'total'
+    return jsonReply({ issues: [], total_count: counts[which] })
+  }) as unknown as typeof fetch
+  return { counts, requests }
+}
+
+const counted = { settings: { url: 'https://redmine.test', statusBar: true }, secrets: { apiKey: 'KEY' } }
+
+/** The item's latest state, as Orca would draw it. */
+function statusBarItem(host: { callsOf(method: string): unknown[] }) {
+  return (host.callsOf('statusBar.update').at(-1) as Record<string, unknown> | undefined) ?? null
+}
+
+/** Long timers are captured instead of firing, so a test decides when the interval ticks. */
+function fakeTimers() {
+  const real = globalThis.setTimeout
+  const scheduled: { run: () => void; ms: number }[] = []
+  globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+    if ((ms ?? 0) > 1000) {
+      scheduled.push({ run: fn, ms: ms ?? 0 })
+      return 0 as unknown as ReturnType<typeof setTimeout>
+    }
+    return real(() => fn(), ms) as unknown as ReturnType<typeof setTimeout>
+  }) as unknown as typeof setTimeout
+  stopFakeTimers = () => {
+    globalThis.setTimeout = real
+  }
+  return scheduled
+}
+
+/** Waits for the worker's promises (they run on microtasks and 0 ms timers) to settle. */
+async function waitFor(check: () => boolean, what = 'the worker to settle') {
+  for (let i = 0; i < 200 && !check(); i++) await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.ok(check(), `waited for ${what}`)
+}
+
+/** Fires the pending interval and waits for the refresh it causes. */
+async function tick(host: { callsOf(method: string): unknown[] }, scheduled: { run: () => void }[]) {
+  const seen = host.callsOf('statusBar.update').length
+  scheduled.at(-1)!.run()
+  await waitFor(() => host.callsOf('statusBar.update').length > seen, 'the interval to refresh')
+}
+
+const text = (key: Parameters<typeof translate>[1], vars: Record<string, string | number>) => translate(systemLocale(), key, vars)
+
+test('the item shows my open task count, in the tone of what needs attention', async () => {
+  resetRedmineCaches()
+  const scheduled = fakeTimers()
+  const redmine = statusBarRedmine({ total: 7 })
+  const host = mockHost({ ...counted, settings: { ...counted.settings, statusBarMinutes: 5 } })
+  const worker = await mountWorker(main, { host })
+  await waitFor(() => statusBarItem(host) !== null)
+  assert.deepEqual(statusBarItem(host), {
+    id: 'open-tasks',
+    text: '7',
+    tone: 'neutral',
+    tooltip: text('statusBar.tooltip', { total: 7 }),
+    visible: true
+  })
+  assert.equal(scheduled.at(-1)?.ms, 5 * 60_000)
+
+  // One task past its due date: warning, and the tooltip says how many.
+  redmine.counts.overdue = 1
+  await tick(host, scheduled)
+  assert.equal(statusBarItem(host)?.tone, 'warning')
+  assert.equal(statusBarItem(host)?.tooltip, `${text('statusBar.tooltip', { total: 7 })} · ${text('statusBar.overdue', { count: 1 })}`)
+
+  // Urgent work wins over overdue.
+  redmine.counts.urgent = 2
+  await tick(host, scheduled)
+  assert.equal(statusBarItem(host)?.tone, 'danger')
+  assert.ok(String(statusBarItem(host)?.tooltip).includes(text('statusBar.urgent', { count: 2 })))
+
+  // Nothing open: 0 in the neutral tone.
+  Object.assign(redmine.counts, { total: 0, overdue: 0, urgent: 0 })
+  await tick(host, scheduled)
+  assert.equal(statusBarItem(host)?.text, '0')
+  assert.equal(statusBarItem(host)?.tone, 'neutral')
+  await worker.deactivate()
+})
+
+test('the item is hidden without a saved connection, when turned off, and on disconnect', async () => {
+  resetRedmineCaches()
+  fakeTimers()
+  // No API key: nothing to count.
+  let host = mockHost({ settings: { url: 'https://redmine.test' } })
+  let worker = await mountWorker(main, { host })
+  await waitFor(() => statusBarItem(host) !== null)
+  assert.deepEqual(statusBarItem(host), { id: 'open-tasks', visible: false })
+  await worker.deactivate()
+
+  // Turned off in Settings: no Redmine request at all.
+  const requests = stubFetch({})
+  host = mockHost({ settings: { url: 'https://redmine.test', statusBar: false }, secrets: { apiKey: 'KEY' } })
+  worker = await mountWorker(main, { host })
+  await waitFor(() => statusBarItem(host) !== null)
+  assert.deepEqual(statusBarItem(host), { id: 'open-tasks', visible: false })
+  assert.deepEqual(requests, [])
+  await worker.deactivate()
+
+  // Disconnecting hides it at once, without waiting for the interval.
+  statusBarRedmine({ total: 3 })
+  host = mockHost(counted)
+  worker = await mountWorker(main, { host })
+  await waitFor(() => statusBarItem(host)?.text === '3')
+  await worker.request('redmine.disconnect')
+  assert.deepEqual(statusBarItem(host), { id: 'open-tasks', visible: false })
+  await worker.deactivate()
+})
+
+test('turning the item off in Settings hides it without waiting for the interval', async () => {
+  resetRedmineCaches()
+  fakeTimers()
+  statusBarRedmine({ total: 2 })
+  const host = mockHost(counted)
+  const worker = await mountWorker(main, { host })
+  await waitFor(() => statusBarItem(host)?.text === '2')
+
+  const updates = host.callsOf('statusBar.update').length
+  await host.worker.call('settings.set', { key: 'statusBar', value: false })
+  await waitFor(() => host.callsOf('statusBar.update').length > updates, 'the item to hide')
+  assert.deepEqual(statusBarItem(host), { id: 'open-tasks', visible: false })
+  await worker.deactivate()
+})
+
+test('a failed refresh drops the count and says why, and the next one recovers', async () => {
+  resetRedmineCaches()
+  const scheduled = fakeTimers()
+  statusBarRedmine({ total: 7 })
+  const healthy = globalThis.fetch
+  const host = mockHost(counted)
+  const worker = await mountWorker(main, { host })
+  await waitFor(() => statusBarItem(host)?.text === '7')
+
+  globalThis.fetch = (async () => {
+    throw new Error('connect ECONNREFUSED')
+  }) as unknown as typeof fetch
+  await tick(host, scheduled)
+  assert.deepEqual([statusBarItem(host)?.text, statusBarItem(host)?.tone], ['', 'warning'])
+  assert.match(String(statusBarItem(host)?.tooltip), /ECONNREFUSED/)
+  assert.ok(worker.logs.some((line) => line.startsWith('statusBar:')))
+
+  globalThis.fetch = healthy
+  await tick(host, scheduled)
+  assert.equal(statusBarItem(host)?.text, '7')
+  assert.equal(statusBarItem(host)?.tone, 'neutral')
+  await worker.deactivate()
+})
+
+test('closing a task from the panel updates the count without waiting for the interval', async () => {
+  resetRedmineCaches()
+  fakeTimers()
+  const redmine = statusBarRedmine({ total: 7 })
+  const counting = globalThis.fetch
+  globalThis.fetch = (async (url: string, init: { method: string }) => {
+    if (init.method !== 'GET') {
+      redmine.counts.total = 6
+      return jsonReply({}, 204)
+    }
+    return new URL(url).pathname === '/issues/77.json' ? jsonReply({ issue }) : counting(url as never, init as never)
+  }) as unknown as typeof fetch
+  const host = mockHost(counted)
+  const worker = await mountWorker(main, { host })
+  await waitFor(() => statusBarItem(host)?.text === '7')
+
+  const detail = await worker.request('redmine.setStatus', { id: 77, statusId: 5 })
+  assert.equal(detail.subject, 'Checkout screen')
+  assert.equal(statusBarItem(host)?.text, '6')
+  await worker.deactivate()
+})
+
+test('the interval comes from Settings, is re-read on every tick, and ticks do not stack', async () => {
+  resetRedmineCaches()
+  const scheduled = fakeTimers()
+  statusBarRedmine({ total: 4 })
+  const counting = globalThis.fetch
+  // A Redmine that holds its answer until the test lets it go, counting what it was asked.
+  let gate: Promise<void> | null = null
+  let open: (() => void) | null = null
+  let requests = 0
+  globalThis.fetch = (async (url: string, init: unknown) => {
+    requests += 1
+    if (gate) await gate
+    return counting(url as never, init as never)
+  }) as unknown as typeof fetch
+
+  const host = mockHost({ ...counted, settings: { ...counted.settings, statusBarMinutes: 5 } })
+  const worker = await mountWorker(main, { host })
+  await waitFor(() => statusBarItem(host)?.text === '4')
+  assert.equal(scheduled.at(-1)?.ms, 5 * 60_000)
+
+  // The interval tick while the three counts are still unanswered: no second set of requests.
+  const updates = host.callsOf('statusBar.update').length
+  gate = new Promise<void>((resolve) => {
+    open = resolve
+  })
+  const before = requests
+  scheduled.at(-1)!.run()
+  await waitFor(() => requests > before, 'the counts to be asked')
+  // The tick that arrives meanwhile arms the next interval and waits for the same answer instead
+  // of starting a second set of requests.
+  scheduled.at(-1)!.run()
+  await waitFor(() => scheduled.length >= 3, 'the tick to arm the next interval')
+  assert.equal(requests, before + 2)
+  gate = null
+  open!()
+  await waitFor(() => host.callsOf('statusBar.update').length > updates, 'the held refresh to land')
+  assert.equal(requests, before + 3)
+
+  // A shorter interval in Settings applies at the next tick.
+  await host.worker.call('settings.set', { key: 'statusBarMinutes', value: 1 })
+  scheduled.at(-1)!.run()
+  await waitFor(() => scheduled.at(-1)!.ms === 60_000, 'the new interval')
+  await worker.deactivate()
+})
+
+test('the item opens the panel, finding the plugin key in the CLI listing', async () => {
+  resetRedmineCaches()
+  fakeTimers()
+  stubFetch({ '/issues.json': { issues: [issue], total_count: 1 } })
+  const runs: string[][] = []
+  main.setOrcaRunner(async (args) => {
+    runs.push([...args])
+    if (args[1] === 'list') {
+      return {
+        plugins: [
+          { pluginKey: 'acme.todos', status: 'running', statusBarItems: [] },
+          { pluginKey: 'plozmun.redmine-tasks', status: 'disabled', statusBarItems: [] },
+          { pluginKey: 'local.redmine-tasks', status: 'running', statusBarItems: [{ id: 'open-tasks' }] }
+        ]
+      }
+    }
+    return { pluginKey: args[2], kind: 'panel', panelId: 'redmine', title: 'Redmine' }
+  })
+  const worker = await mountWorker(main, {
+    host: mockHost(configured),
+    commands: ['redmine.myIssues', 'redmine.openPanel']
+  })
+  assert.equal(await worker.command('redmine.openPanel'), translate(systemLocale(), 'command.panelOpened'))
+  assert.deepEqual(runs.at(-1), ['plugin', 'open', 'local.redmine-tasks', '--panel', 'redmine'])
+  // The key is resolved once.
+  await worker.command('redmine.openPanel')
+  assert.equal(runs.filter((args) => args[1] === 'list').length, 1)
+  await worker.deactivate()
+  main.setOrcaRunner((args) => runOrcaJson(args))
+})
+
+test('without the Orca CLI the item shows my task list instead', async () => {
+  resetRedmineCaches()
+  fakeTimers()
+  stubFetch({ '/issues.json': { issues: [issue], total_count: 1 } })
+  main.setOrcaRunner(async () => {
+    throw Object.assign(new Error('spawn orca ENOENT'), { code: 'orca_cli' })
+  })
+  const worker = await mountWorker(main, {
+    host: mockHost(configured),
+    commands: ['redmine.myIssues', 'redmine.openPanel']
+  })
+  const text = String(await worker.command('redmine.openPanel'))
+  assert.match(text, /#77 \[New\] Checkout screen \(Shop\)/)
+  assert.ok(worker.logs.some((line) => line.startsWith('openPanel:')))
+  await worker.deactivate()
+  main.setOrcaRunner((args) => runOrcaJson(args))
 })

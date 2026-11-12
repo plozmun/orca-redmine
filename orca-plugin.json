@@ -30,6 +30,18 @@
       {
         "id": "redmine.myIssues",
         "title": "Redmine: my open tasks"
+      },
+      {
+        "id": "redmine.openPanel",
+        "title": "Redmine: open panel"
+      }
+    ],
+    "statusBarItems": [
+      {
+        "id": "open-tasks",
+        "icon": "flag",
+        "tooltip": "Redmine: open tasks assigned to you",
+        "command": "redmine.openPanel"
       }
     ],
     "settings": [
@@ -120,6 +132,22 @@
           "Add a comment",
           "Add a comment and move a new task to the next open status"
         ]
+      },
+      {
+        "key": "statusBar",
+        "title": "Show my open tasks in the status bar",
+        "description": "A number beside a flag in Orca's status bar, amber when a task is overdue and red when one has a high priority. Press it to open the Redmine panel. Hiding it also stops the refresh.",
+        "type": "boolean",
+        "default": true
+      },
+      {
+        "key": "statusBarMinutes",
+        "title": "Refresh the status bar count every (minutes)",
+        "description": "How often the worker asks Redmine for the count while Orca is open. The count also refreshes right after the panel changes a task.",
+        "type": "integer",
+        "default": 5,
+        "minimum": 1,
+        "maximum": 60
       }
     ],
     "hooks": [

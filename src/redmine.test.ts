@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { projectSubtree, RedmineClient, RedmineError } from './redmine'
+import { localDate, projectSubtree, RedmineClient, RedmineError, resetRedmineCaches, urgentPriorityIds } from './redmine'
 
 function fakeFetch(responses: Record<string, { status?: number; body?: unknown }>) {
   const calls: { url: string; method: string; headers: Record<string, string>; body?: string }[] = []
@@ -152,4 +152,96 @@ test('a project and its subprojects, by identifier or id', () => {
   assert.deepEqual([...projectSubtree(projects, 'client')].sort(), [1, 2, 3])
   assert.deepEqual([...projectSubtree(projects, '2')].sort(), [2, 3])
   assert.deepEqual([...projectSubtree(projects, 'nope')], [])
+})
+
+// --- Counts for the status bar ---
+
+const priorities = [
+  { id: 1, name: 'Low' },
+  { id: 2, name: 'Normal' },
+  { id: 3, name: 'High' },
+  { id: 4, name: 'Urgent' },
+  { id: 5, name: 'Immediate' }
+]
+
+/** Redmine answering each count by its filter; `lists` counts the priority enumeration calls. */
+function countingFetch(counts: { total: number; overdue: number; urgent: number }, answered = priorities) {
+  const calls: string[] = []
+  let enumerations = 0
+  const impl = async (url: string) => {
+    calls.push(url)
+    if (url.includes('/enumerations/issue_priorities.json')) {
+      enumerations += 1
+      return { ok: true, status: 200, text: async () => JSON.stringify({ issue_priorities: answered }) }
+    }
+    const params = new URL(url).searchParams
+    const which = params.get('due_date') ? 'overdue' : params.get('priority_id') ? 'urgent' : 'total'
+    return { ok: true, status: 200, text: async () => JSON.stringify({ issues: [], total_count: counts[which] }) }
+  }
+  return { calls, impl, enumerations: () => enumerations }
+}
+
+test('the open counts come from limit=1 queries, and the priority list is read once', async () => {
+  resetRedmineCaches()
+  const redmine = countingFetch({ total: 7, overdue: 2, urgent: 1 })
+  const client = new RedmineClient('https://redmine.test', 'KEY', redmine.impl)
+  assert.deepEqual(await client.openCounts(), { total: 7, overdue: 2, urgent: 1 })
+
+  for (const url of redmine.calls.filter((call) => call.includes('/issues.json'))) {
+    const params = new URL(url).searchParams
+    assert.equal(params.get('assigned_to_id'), 'me')
+    assert.equal(params.get('status_id'), 'open')
+    assert.equal(params.get('limit'), '1')
+  }
+  const overdue = redmine.calls.find((url) => url.includes('due_date='))!
+  assert.ok(overdue.includes(`due_date=%3C${localDate()}`), overdue)
+  const urgent = redmine.calls.find((url) => url.includes('priority_id='))!
+  assert.equal(new URL(urgent).searchParams.get('priority_id'), '3|4|5')
+
+  // A second refresh asks Redmine for the counts again, not for the priorities.
+  await client.openCounts()
+  assert.equal(redmine.enumerations(), 1)
+  assert.equal(redmine.calls.length, 7)
+})
+
+test('urgent priorities are those above the default one, in the instance order', () => {
+  assert.deepEqual(urgentPriorityIds(priorities), [3, 4, 5])
+  // An instance that flags its default: the ones after it.
+  assert.deepEqual(
+    urgentPriorityIds([
+      { id: 1, name: 'Low', isDefault: true },
+      { id: 2, name: 'Normal' },
+      { id: 9, name: 'Critical' }
+    ]),
+    [2, 9]
+  )
+  // Nothing above the default: no urgent filter at all.
+  assert.deepEqual(urgentPriorityIds([{ id: 1, name: 'Only' }]), [])
+  assert.deepEqual(urgentPriorityIds([]), [])
+})
+
+test('the priority enumeration is cached per Redmine URL', async () => {
+  resetRedmineCaches()
+  const first = countingFetch({ total: 0, overdue: 0, urgent: 0 }, [{ id: 1, name: 'Low' }])
+  const second = countingFetch({ total: 0, overdue: 0, urgent: 0 }, [{ id: 1, name: 'Low' }])
+  await new RedmineClient('https://one.test', 'KEY', first.impl).openCounts()
+  await new RedmineClient('https://two.test', 'KEY', second.impl).openCounts()
+  assert.equal(first.enumerations(), 1)
+  assert.equal(second.enumerations(), 1)
+})
+
+test('count failures keep the Redmine error codes', async () => {
+  resetRedmineCaches()
+  const unauthorized = new RedmineClient('https://redmine.test', 'BAD', async (url: string) => {
+    if (url.includes('/enumerations/')) {
+      return { ok: false, status: 401, text: async () => '' }
+    }
+    return { ok: false, status: 401, text: async () => '' }
+  })
+  await assert.rejects(unauthorized.openCounts(), (e: RedmineError) => e.code === 'unauthorized')
+
+  const offline = new RedmineClient('https://redmine.test', 'KEY', async () => {
+    throw new Error('fetch failed')
+  })
+  await assert.rejects(offline.openCounts(), (e: RedmineError) => e.code === 'network')
 })

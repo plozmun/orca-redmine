@@ -2,7 +2,7 @@
 // and runs the `orca` CLI. The URL lives in the plugin settings; the API key in its encrypted
 // secrets (OS keychain). Errors are thrown as RedmineError codes for the panel to translate.
 import type { OrcaWorkerApi } from 'orca/worker'
-import { systemLocale, translate } from './i18n'
+import { systemLocale, translate, translateErrorCode } from './i18n'
 import { detectRedmineCli, writeContextFile } from './agent-files'
 import { asCommentsMode, buildContextBlock, buildLaunchPrompt, CONTEXT_MAX_CHARS, sendPrompt, workspaceNameFor } from './launch'
 import {
@@ -14,6 +14,7 @@ import {
   matchHostWorkspace,
   matchWorktree,
   projectForKey,
+  runOrcaJson,
   shortBranch,
   type CreatedWorktree,
   type CreateWorktreeOptions,
@@ -23,12 +24,14 @@ import {
   type OrcaListing
 } from './orca-workspaces'
 import type { ConnectionStatus } from './protocol'
-import { normalizeBaseUrl, projectSubtree, RedmineClient, RedmineError, type IssueDetail } from './redmine'
+import { normalizeBaseUrl, projectSubtree, RedmineClient, RedmineError, type IssueDetail, type OpenCounts } from './redmine'
 import { branchFromTemplate, taskRefFromWorkspace } from './task-ref'
 import { ISSUE_BY_WORKSPACE, PROJECT_BY_ORCA_PROJECT, type AssignedIssue } from './links'
+import { pickPluginKey, type ListedPlugin } from './plugin-key'
 
 let orcaLister: () => Promise<OrcaListing> = listOrca
 let orcaCreator: (o: CreateWorktreeOptions) => Promise<CreatedWorktree> = createWorktree
+let orcaRunner: (args: string[]) => Promise<unknown> = (args) => runOrcaJson(args)
 
 /** Tests: replaces the Orca CLI listing. */
 export function setOrcaLister(lister: () => Promise<OrcaListing>): void {
@@ -38,6 +41,11 @@ export function setOrcaLister(lister: () => Promise<OrcaListing>): void {
 /** Tests: replaces `orca worktree create`. */
 export function setOrcaCreator(creator: (o: CreateWorktreeOptions) => Promise<CreatedWorktree>): void {
   orcaCreator = creator
+}
+
+/** Tests: replaces the `orca` CLI runner (panel opening). */
+export function setOrcaRunner(runner: (args: string[]) => Promise<unknown>): void {
+  orcaRunner = runner
 }
 
 let redmineCli: () => Promise<string | null> = detectRedmineCli
@@ -61,6 +69,14 @@ const COMMENTS_SETTING = 'contextComments'
 const MAX_CHARS_SETTING = 'contextMaxChars'
 const BRANCH_TEMPLATE_SETTING = 'branchTemplate'
 const ON_CREATED_SETTING = 'onWorkspaceCreated'
+const STATUS_BAR_SETTING = 'statusBar'
+const STATUS_BAR_MINUTES_SETTING = 'statusBarMinutes'
+/** The `contributes.statusBarItems` id this worker updates (`statusBar.update`). */
+const STATUS_BAR_ID = 'open-tasks'
+/** The `contributes.panels` id the item opens. */
+const PANEL_ID = 'redmine'
+/** Refresh interval when `statusBarMinutes` says nothing; the manifest offers 1–60. */
+const STATUS_BAR_MINUTES = 5
 /** A hook must answer within 2 s; the Redmine lookup gets this much of it. */
 const HOOK_BUDGET_MS = 1500
 
@@ -108,6 +124,71 @@ async function status(orca: OrcaWorkerApi): Promise<ConnectionStatus> {
   } catch (error) {
     return { configured: false, url, user: null, ...errorParts(error) }
   }
+}
+
+/** Minutes between status bar refreshes: the `statusBarMinutes` setting, 1–60, 5 by default. */
+async function statusBarMinutes(orca: OrcaWorkerApi): Promise<number> {
+  const value = await orca.settings.get(STATUS_BAR_MINUTES_SETTING)
+  if (typeof value !== 'number' || !Number.isFinite(value)) return STATUS_BAR_MINUTES
+  return Math.min(60, Math.max(1, Math.round(value)))
+}
+
+/** Urgent work first, then overdue, then nothing that needs attention. */
+function statusBarTone(counts: OpenCounts): 'neutral' | 'warning' | 'danger' {
+  if (counts.urgent > 0) return 'danger'
+  return counts.overdue > 0 ? 'warning' : 'neutral'
+}
+
+/** The count, plus the overdue and urgent counts when there are any: what the tone is about. */
+function statusBarTooltip(locale: string, counts: OpenCounts): string {
+  const parts = [translate(locale, 'statusBar.tooltip', { total: counts.total })]
+  if (counts.overdue > 0) parts.push(translate(locale, 'statusBar.overdue', { count: counts.overdue }))
+  if (counts.urgent > 0) parts.push(translate(locale, 'statusBar.urgent', { count: counts.urgent }))
+  return parts.join(' · ')
+}
+
+/**
+ * Updates the `open-tasks` status bar item: the number of my open tasks, the tone of what needs
+ * attention and a tooltip saying why. Hidden when the item is turned off or there is no saved
+ * connection; a failed refresh shows the reason instead of a stale count. Never throws, and a
+ * missing status bar (the web client) only logs: no panel request may fail for it.
+ */
+async function refreshStatusBar(orca: OrcaWorkerApi): Promise<void> {
+  const locale = systemLocale()
+  let update: { text?: string; tone?: 'neutral' | 'warning' | 'danger'; tooltip?: string; visible: boolean }
+  try {
+    const enabled = await orca.settings.get(STATUS_BAR_SETTING)
+    if (enabled === false || !(await savedUrl(orca)) || !(await orca.secrets.get(API_KEY))) {
+      update = { visible: false }
+    } else {
+      const counts = await (await client(orca)).openCounts()
+      update = {
+        text: String(counts.total),
+        tone: statusBarTone(counts),
+        tooltip: statusBarTooltip(locale, counts),
+        visible: true
+      }
+    }
+  } catch (error) {
+    const parts = errorParts(error)
+    orca.log(`statusBar: ${parts.errorDetail}`)
+    const reason = translateErrorCode(locale, parts.errorCode, parts.errorDetail) ?? translate(locale, 'statusBar.error', { reason: parts.errorDetail })
+    update = { text: '', tone: 'warning', tooltip: reason.slice(0, 250), visible: true }
+  }
+  try {
+    await orca.host.call('statusBar.update', { id: STATUS_BAR_ID, ...update })
+  } catch (error) {
+    orca.log(`statusBar.update: ${errorParts(error).errorDetail}`)
+  }
+}
+
+/** The palette text: my open tasks, or why there are none to list. */
+async function myIssuesText(orca: OrcaWorkerApi, locale: string): Promise<string> {
+  if (!(await savedUrl(orca)) || !(await orca.secrets.get(API_KEY))) return translate(locale, 'command.notConfigured')
+  const { issues, total } = await (await client(orca)).listIssues({ mine: true, limit: 20 })
+  if (issues.length === 0) return translate(locale, 'command.noIssues')
+  const lines = issues.map((i) => `#${i.id} [${i.status}] ${i.subject} (${i.project})`)
+  return [translate(locale, 'command.header', { total }), ...lines].join('\n')
 }
 
 /**
@@ -223,6 +304,40 @@ export default function activate(orca: OrcaWorkerApi): void {
   /** Workspaces whose work start was already recorded in this run (the event may repeat). */
   const started = new Set<string>()
 
+  // Status bar: one refresh at a time, whether a panel change or the interval asked for it, so a
+  // slow Redmine is not asked twice for the same count.
+  let refreshing: Promise<void> | null = null
+  const refreshOnce = (): Promise<void> => {
+    refreshing ??= refreshStatusBar(orca).finally(() => {
+      refreshing = null
+    })
+    return refreshing
+  }
+  /**
+   * Refreshes the item now and again after `statusBarMinutes` (re-read on every tick, so a change in
+   * Settings applies at the next one). The next tick is armed before the refresh: a slow Redmine
+   * never stops the loop, and Orca's process is not kept alive by it.
+   */
+  let statusBarTimer: ReturnType<typeof setTimeout> | undefined
+  const statusBarTick = async (): Promise<void> => {
+    try {
+      const minutes = await statusBarMinutes(orca)
+      // One loop only: a tick asked for by a Settings change replaces the pending one.
+      if (statusBarTimer !== undefined) clearTimeout(statusBarTimer)
+      statusBarTimer = setTimeout(() => void statusBarTick(), minutes * 60_000)
+      ;(statusBarTimer as { unref?: () => void }).unref?.()
+      await refreshOnce()
+    } catch (error) {
+      orca.log(`statusBar: ${errorParts(error).errorDetail}`)
+    }
+  }
+  void statusBarTick()
+
+  // Turning the item off or changing the interval takes hold now, not at the next interval.
+  orca.settings.onDidChange(({ key }) => {
+    if (key === STATUS_BAR_SETTING || key === STATUS_BAR_MINUTES_SETTING) void statusBarTick()
+  })
+
   // Team branch convention: never refuses a creation, and passes when anything is missing or slow.
   orca.hooks.on('workspace.create.before', async (event, next) => {
     if (event.kind !== 'worktree') return
@@ -278,11 +393,13 @@ export default function activate(orca: OrcaWorkerApi): void {
     await new RedmineClient(base, apiKey.trim()).currentUser()
     await orca.settings.set(URL_SETTING, base)
     await orca.secrets.set(API_KEY, apiKey.trim())
+    await refreshOnce()
     return status(orca)
   })
 
   orca.panels.handle('redmine.disconnect', async () => {
     await orca.secrets.delete(API_KEY)
+    await refreshOnce()
     return status(orca)
   })
 
@@ -331,6 +448,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     const redmine = await client(orca)
     await redmine.updateIssue(id, { statusId })
     orca.panels.post('redmine.issueChanged', { id })
+    await refreshOnce()
     return redmine.getIssue(id)
   })
 
@@ -338,6 +456,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     const redmine = await client(orca)
     await redmine.updateIssue(id, { notes })
     orca.panels.post('redmine.issueChanged', { id })
+    await refreshOnce()
     return redmine.getIssue(id)
   })
 
@@ -345,6 +464,7 @@ export default function activate(orca: OrcaWorkerApi): void {
     if (!(hours > 0 && hours <= 24)) throw new RedmineError('invalid_hours', `hours=${hours}`)
     const timeEntryId = await (await client(orca)).logTime(id, hours, comments)
     orca.panels.post('redmine.issueChanged', { id })
+    await refreshOnce()
     return { timeEntryId }
   })
 
@@ -392,12 +512,22 @@ export default function activate(orca: OrcaWorkerApi): void {
   })
 
   // Command palette. No panel asked, so it answers in the machine's language.
-  orca.commands.register('redmine.myIssues', async () => {
+  orca.commands.register('redmine.myIssues', async () => myIssuesText(orca, systemLocale()))
+
+  // Pressing the status bar item. `orca plugin open` needs the plugin's key, which the worker is not
+  // told (a dev folder loads as local.redmine-tasks), so it is read once from the CLI and cached.
+  let panelKey: string | null = null
+  orca.commands.register('redmine.openPanel', async () => {
     const locale = systemLocale()
-    if (!(await savedUrl(orca)) || !(await orca.secrets.get(API_KEY))) return translate(locale, 'command.notConfigured')
-    const { issues, total } = await (await client(orca)).listIssues({ mine: true, limit: 20 })
-    if (issues.length === 0) return translate(locale, 'command.noIssues')
-    const lines = issues.map((i) => `#${i.id} [${i.status}] ${i.subject} (${i.project})`)
-    return [translate(locale, 'command.header', { total }), ...lines].join('\n')
+    try {
+      panelKey ??= pickPluginKey(((await orcaRunner(['plugin', 'list'])) as { plugins?: ListedPlugin[] })?.plugins ?? [], STATUS_BAR_ID)
+      if (!panelKey) throw new RedmineError('orca_cli', 'no redmine-tasks plugin in `orca plugin list`')
+      await orcaRunner(['plugin', 'open', panelKey, '--panel', PANEL_ID])
+      return translate(locale, 'command.panelOpened')
+    } catch (error) {
+      // No CLI, or the panel cannot be opened: the press still shows the task list.
+      orca.log(`openPanel: ${errorParts(error).errorDetail}`)
+      return myIssuesText(orca, locale)
+    }
   })
 }

@@ -15,7 +15,6 @@ import {
   Heading,
   IconButton,
   Input,
-  KeyValue,
   Link,
   List,
   ListItem,
@@ -1121,8 +1120,11 @@ function IssueList() {
 function LaunchSection({ issue }: { issue: IssueDetail }) {
   const noAgent = read(launchAgent) === NO_AGENT
   return (
-    <Collapsible title={t('launch.title')} description={t('launch.subtitle')}>
+    <Collapsible title={t('launch.title')}>
       <Stack gap="sm">
+        <Text muted size="xs">
+          {t('launch.subtitle')}
+        </Text>
         <Text muted size="xs">
           {t('launch.name', { name: workspaceNameFor(issue) })}
         </Text>
@@ -1207,11 +1209,13 @@ function HereSection({ issue }: { issue: IssueDetail }) {
   return (
     <Collapsible
       title={t('here.title')}
-      description={t('here.subtitle')}
       open={read(hereOpen)}
       onChange={(open) => set(hereOpen, open)}
     >
       <Stack gap="sm">
+        <Text muted size="xs">
+          {t('here.subtitle')}
+        </Text>
         <Select label={t('launch.agent')} value={agent} options={AGENTS} onChange={(v) => set(launchAgent, v)} />
         <Textarea
           label={t('launch.instructions')}
@@ -1325,6 +1329,22 @@ function TimeTab({ issue }: { issue: IssueDetail }) {
   )
 }
 
+/** One detail line: a small muted label in a fixed column, then the value. */
+function DetailRow({ label, children }: { label: string; children: unknown }) {
+  return (
+    <Row gap="sm" align="center">
+      <Box width={88} shrink={false}>
+        <Text size="xs" muted>
+          {label}
+        </Text>
+      </Box>
+      <Box grow shrink>
+        {children}
+      </Box>
+    </Row>
+  )
+}
+
 function IssueView({ issue }: { issue: IssueDetail }) {
   const ws = read(workspace)
   const disabled = read(busy)
@@ -1360,18 +1380,29 @@ function IssueView({ issue }: { issue: IssueDetail }) {
         </Text>
       </Stack>
 
-      <KeyValue
-        items={[
-          { label: t('issue.project'), value: issue.project },
-          { label: t('issue.assignee'), value: issue.assignee ?? t('issue.unassigned') },
-          { label: t('issue.priority'), value: issue.priority, ...(urgent ? { tone: 'warning' as const } : {}) },
-          { label: t('issue.done'), value: `${issue.doneRatio}%` }
-        ]}
-      />
+      <Stack gap="xs">
+        <DetailRow label={t('issue.project')}>
+          <Text size="xs" truncate>
+            {issue.project}
+          </Text>
+        </DetailRow>
+        <DetailRow label={t('issue.assignee')}>
+          <Text size="xs" truncate>
+            {issue.assignee ?? t('issue.unassigned')}
+          </Text>
+        </DetailRow>
+        <DetailRow label={t('issue.priority')}>
+          {urgent ? <Badge tone="warning">{issue.priority}</Badge> : <Text size="xs">{issue.priority}</Text>}
+        </DetailRow>
+        <DetailRow label={t('issue.done')}>
+          <Text size="xs">{`${issue.doneRatio}%`}</Text>
+        </DetailRow>
+      </Stack>
 
       {read(statuses).length > 0 ? (
         <Select
           label={t('issue.status')}
+          labelHidden
           value={String(issue.statusId)}
           options={read(statuses).map((s) => ({ value: String(s.id), label: s.name }))}
           disabled={disabled}
@@ -1388,7 +1419,7 @@ function IssueView({ issue }: { issue: IssueDetail }) {
             </Button>
           </Row>
         ) : (
-          <Button variant="outline" icon="link" onPress={() => assignIssue(issue)}>
+          <Button size="sm" variant="outline" icon="link" onPress={() => assignIssue(issue)}>
             {assigned ? t('issue.assignReplacing', { id: assigned.id }) : t('issue.assign')}
           </Button>
         )
@@ -1404,8 +1435,11 @@ function IssueView({ issue }: { issue: IssueDetail }) {
         ) : null}
         <LaunchSection issue={issue} />
         <HereSection issue={issue} />
-        <Collapsible title={t('send.title')} description={t('send.subtitle')}>
+        <Collapsible title={t('send.title')}>
           <Stack gap="sm">
+            <Text muted size="xs">
+              {t('send.subtitle')}
+            </Text>
             {ws && ws.terminals.length > 0 ? (
               <Select
                 label={t('send.terminal')}

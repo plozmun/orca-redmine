@@ -148,6 +148,9 @@ export const en = {
 
   // What the agent can use besides the prompt
   'agent.cliHint': 'The `redmine` CLI is available to read or update task #{id}. Its number is also in `$REDMINE_ISSUE`.',
+  'agentState.working': 'Agent working',
+  'agentState.permission': 'Agent needs permission',
+  'agentState.done': 'Agent done',
   'agent.launch': 'Launch agent',
   'agent.send': 'Send to terminal',
   'agent.where': 'Where',

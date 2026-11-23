@@ -137,6 +137,9 @@ export const es: Messages = {
   'here.unsupported': 'Esta versión de Orca no puede lanzar agentes en un workspace: actualiza Orca.',
 
   'agent.cliHint': 'Tienes el CLI `redmine` para leer o actualizar la tarea #{id}. Su número también está en `$REDMINE_ISSUE`.',
+  'agentState.working': 'Agente trabajando',
+  'agentState.permission': 'Agente pide permiso',
+  'agentState.done': 'Agente terminó',
   'agent.launch': 'Lanzar agente',
   'agent.send': 'Enviar a terminal',
   'agent.where': 'Dónde',

@@ -48,7 +48,8 @@ const sample = {
     }),
     'redmine.orcaProjects': () => [{ id: 'git:shop', name: 'shop' }],
     'redmine.launchHereSupport': () => ({ available: true }),
-    'redmine.counts': () => ({ total: 12, overdue: 2, urgent: 1 })
+    'redmine.counts': () => ({ total: 12, overdue: 2, urgent: 1 }),
+    'redmine.agentStates': () => ({ '4077': 'working', '4081': 'permission' })
   },
   events: [
     {

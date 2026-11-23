@@ -488,6 +488,132 @@ test('locate falls back to the CLI when the host refuses workspace.list', async 
 
 type OrcaListingLike = Awaited<ReturnType<Parameters<typeof main.setOrcaLister>[0]>>
 
+// --- Host API 1.7: project from the host, mapping migration, project picker, agent states ---
+
+const hostWithProjects = (storage: Record<string, unknown> = {}) =>
+  mockHost({
+    capabilities: ['workspace:read', 'storage:own'],
+    storage,
+    results: {
+      'workspace.list': {
+        workspaces: [
+          { id: 'identity:wt-1', kind: 'worktree', name: 'pay', path: '/p', branch: 'feature/1-pay', hostId: 'local', projectId: 'repo-shop', project: 'shop' },
+          { id: 'identity:wt-2', kind: 'worktree', name: 'pay', path: '/q', branch: 'feature/2-pay', hostId: 'local', projectId: 'repo-web', project: 'web' }
+        ],
+        truncated: false
+      },
+      'project.list': {
+        projects: [
+          { id: 'repo-shop', name: 'shop', kind: 'git', hostId: 'local', path: '/repos/shop' },
+          { id: 'repo-web', name: 'web', kind: 'git', hostId: 'local', path: '/repos/web' },
+          { id: 'repo-old', name: 'old', kind: 'git', hostId: 'local', path: '/repos/old', hidden: true },
+          { id: 'folder-docs', name: 'docs', kind: 'folder', hostId: 'local', path: '/docs' }
+        ],
+        truncated: false
+      }
+    }
+  })
+
+test('with host API 1.7 locate needs no CLI and prefers the focused workspace id', async () => {
+  let cliRuns = 0
+  main.setOrcaLister(async () => {
+    cliRuns++
+    throw Object.assign(new Error('spawn orca ENOENT'), { code: 'orca_cli' })
+  })
+  const worker = await mountWorker(main, { host: hostWithProjects({ 'links.projectKeysMigrated': true }) })
+  assert.deepEqual(await worker.request('redmine.locateWorkspace', { displayName: 'pay', branch: 'feature/1-pay' }), {
+    located: { workspaceKey: 'wt-1', orcaProjectId: 'repo-shop', orcaProjectName: 'shop' }
+  })
+  // Two workspaces named `pay`: the id Orca gives for the focused one decides.
+  assert.deepEqual(await worker.request('redmine.locateWorkspace', { displayName: 'pay', branch: 'feature/1-pay', workspaceId: 'identity:wt-2' }), {
+    located: { workspaceKey: 'wt-2', orcaProjectId: 'repo-web', orcaProjectName: 'web' }
+  })
+  assert.equal(cliRuns, 0)
+  await worker.deactivate()
+})
+
+test('mappings made under CLI project ids move once to the host ids, keeping the old keys', async () => {
+  let cliRuns = 0
+  main.setOrcaLister(async () => {
+    cliRuns++
+    return { projects: [{ id: 'git:x/shop', displayName: 'shop', sourceRepoIds: ['repo-shop'] }], worktrees: [] }
+  })
+  const host = hostWithProjects({ 'links.projectByOrcaProject': { 'git:x/shop': 'shop-redmine' } })
+  const worker = await mountWorker(main, { host })
+  await worker.request('redmine.locateWorkspace', { displayName: 'pay', branch: 'feature/1-pay' })
+  assert.deepEqual(host.data().storage['links.projectByOrcaProject'], { 'git:x/shop': 'shop-redmine', 'repo-shop': 'shop-redmine' })
+  assert.equal(host.data().storage['links.projectKeysMigrated'], true)
+  await worker.request('redmine.locateWorkspace', { displayName: 'pay', branch: 'feature/1-pay' })
+  assert.equal(cliRuns, 1, 'the CLI is asked once')
+  await worker.deactivate()
+})
+
+test('a failed migration is retried at the next locate, and the locate still answers', async () => {
+  let fail = true
+  main.setOrcaLister(async () => {
+    if (fail) throw Object.assign(new Error('spawn orca ENOENT'), { code: 'orca_cli' })
+    return { projects: [{ id: 'git:x/shop', sourceRepoIds: ['repo-shop'] }], worktrees: [] }
+  })
+  const host = hostWithProjects({ 'links.projectByOrcaProject': { 'git:x/shop': 'shop-redmine' } })
+  const worker = await mountWorker(main, { host })
+  const answer = await worker.request('redmine.locateWorkspace', { displayName: 'pay', branch: 'feature/1-pay' })
+  assert.equal((answer.located as { orcaProjectId: string }).orcaProjectId, 'repo-shop')
+  assert.equal(host.data().storage['links.projectKeysMigrated'], undefined)
+  fail = false
+  await worker.request('redmine.locateWorkspace', { displayName: 'pay', branch: 'feature/1-pay' })
+  assert.equal((host.data().storage['links.projectByOrcaProject'] as Record<string, string>)['repo-shop'], 'shop-redmine')
+  await worker.deactivate()
+})
+
+test('the project picker lists the host’s Git projects, and creation gets the CLI project id', async () => {
+  main.setOrcaLister(async () => ({ projects: [{ id: 'git:x/shop', sourceRepoIds: ['repo-shop'] }], worktrees: [] }))
+  const asked: { orcaProjectId: string }[] = []
+  main.setOrcaCreator(async (o) => {
+    asked.push(o)
+    return { workspaceKey: 'wt-9', displayName: 'n', branch: 'b', path: '/n', launch: 'terminal' } as never
+  })
+  stubFetch({ '/issues/4077.json': { issue: { ...issue, id: 4077 } } })
+  const worker = await mountWorker(main, { host: mockHost({ ...configured, capabilities: ['workspace:read', 'storage:own', 'settings:own', 'secrets:own'], results: { 'project.list': { projects: [
+    { id: 'repo-web', name: 'web', kind: 'git', hostId: 'local', path: '/w' },
+    { id: 'repo-shop', name: 'shop', kind: 'git', hostId: 'local', path: '/s' },
+    { id: 'repo-old', name: 'old', kind: 'git', hostId: 'local', path: '/o', hidden: true },
+    { id: 'folder-docs', name: 'docs', kind: 'folder', hostId: 'local', path: '/d' }
+  ], truncated: false } } }) })
+  assert.deepEqual(await worker.request('redmine.orcaProjects'), [
+    { id: 'repo-shop', name: 'shop' },
+    { id: 'repo-web', name: 'web' }
+  ])
+  await worker.request('redmine.launchWorkspace', { issueId: 4077, orcaProjectId: 'repo-shop', agent: null, instructions: '', activate: false, locale: 'en' })
+  assert.equal(asked[0].orcaProjectId, 'git:x/shop')
+  await worker.deactivate()
+})
+
+test('agent states of linked tasks come from workspace.list with status', async () => {
+  const host = mockHost({
+    capabilities: ['workspace:read', 'storage:own'],
+    storage: { 'links.issueByWorkspace': { 'wt-1': { id: 4077, subject: 'Pay' }, 'wt-2': { id: 4081, subject: 'Web' } } },
+    results: {
+      'workspace.list': {
+        workspaces: [
+          { id: 'identity:wt-1', kind: 'worktree', name: 'pay', path: '/p', branch: 'b', hostId: 'local', status: { state: 'working', unread: false, terminalCount: 1, lastActivityAt: 1 } },
+          { id: 'identity:wt-2', kind: 'worktree', name: 'web', path: '/q', branch: 'c', hostId: 'local', status: { state: 'inactive', unread: false, terminalCount: 0, lastActivityAt: null } }
+        ],
+        truncated: false
+      }
+    }
+  })
+  const worker = await mountWorker(main, { host })
+  assert.deepEqual(await worker.request('redmine.agentStates'), { '4077': 'working' })
+  assert.deepEqual(host.callsOf('workspace.list').at(-1), { includeStatus: true })
+  await worker.deactivate()
+
+  // A host that refuses the call: nothing to show, and no error for the panel.
+  const refused = await mountWorker(main, { host: mockHost({ capabilities: [] }) })
+  assert.deepEqual(await refused.request('redmine.agentStates'), {})
+  await refused.deactivate()
+})
+
+
 // --- Workspace creation: branch convention, automatic link, optional task update ---
 
 const task4077 = {
@@ -1031,6 +1157,29 @@ test('locating a workspace remembers its ids, so removing it by CLI id still cle
   assert.equal(followups.length, 1)
   assert.equal(followups[0].kind, 'workspaceRemoved')
   assert.equal(followups[0].issueId, 4077)
+  await worker.deactivate()
+})
+
+test('a removal that carries workspaceListId clears the link without the alias map or the CLI', async () => {
+  let cliRuns = 0
+  main.setOrcaLister(async () => {
+    cliRuns++
+    return { projects: [], worktrees: [] }
+  })
+  const host = mockHost({
+    capabilities: ['workspace:read', 'storage:own'],
+    storage: { 'links.issueByWorkspace': { 'wt-7': { id: 4077, subject: 'Checkout with saved cards' } } }
+  })
+  const worker = await mountWorker(main, { host })
+  await worker.emit('workspace.removed', {
+    workspaceId: 'r::/repos/shop/4077-checkout',
+    workspaceListId: 'identity:wt-7',
+    kind: 'worktree',
+    path: '/repos/shop/4077-checkout'
+  })
+  assert.deepEqual(host.data().storage['links.issueByWorkspace'], {})
+  assert.equal((host.data().storage.followups as Followup[])[0].issueId, 4077)
+  assert.equal(cliRuns, 0)
   await worker.deactivate()
 })
 

@@ -2,7 +2,7 @@
 
 ## Why
 
-Orca 1.4.259+ (host API 1.7) answers through the plugin host what the worker still asks the `orca` CLI for, and names workspaces in its events with the same id `workspace.list` uses:
+Recent Orca (host API 1.7; 1.4.271 is at 1.10) answers through the plugin host what the worker still asks the `orca` CLI for, and names workspaces in its events with the same id `workspace.list` uses:
 
 - `workspace.list` rows carry `projectId` and `project`; `project.list` lists projects (repositories and folders) with the same ids. Both need only `workspace:read`, which the plugin already has.
 - `workspace.created`, `workspace.removed` and `agent.status.changed` carry `workspaceListId`, and `workspace.changed` / `workspace.readContext` carry the focused `workspaceId`.

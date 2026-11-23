@@ -1,8 +1,14 @@
 import { assert, test } from 'orca/testing'
 import {
+  agentStatesFor,
+  cliProjectIdFor,
   createWorktreeArgs,
   describeWorktree,
   findWorkspaceId,
+  findWorkspaceRow,
+  migrateProjectKeys,
+  projectFromHostRow,
+  unknownProjectKeys,
   keyFromHostId,
   matchHostWorkspace,
   matchWorktree,
@@ -119,4 +125,62 @@ test('a worktree named by its CLI id or link key', () => {
   assert.deepEqual(byId, { workspaceKey: 'wt2:local:bbb', name: 'login', orcaProjectId: 'git:gitlab.example.com/backend/kyb', orcaProjectName: 'kyb' })
   assert.equal(describeWorktree(listing, { key: 'wt2:local:ccc' })?.orcaProjectName, 'site')
   assert.equal(describeWorktree(listing, { id: 'nope', key: null }), null)
+})
+
+// --- Host API 1.7: projects, focused id, agent status ---
+
+const rows17: HostWorkspaceRow[] = [
+  { id: 'identity:wt2:local:aaa', kind: 'worktree', name: 'kyb', branch: 'develop', projectId: 'repo-kyb', project: 'kyb' },
+  { id: 'identity:wt2:local:bbb', kind: 'worktree', name: 'login', branch: 'feature/123-login', projectId: 'repo-kyb', project: 'kyb' },
+  { id: 'identity:wt2:local:ccc', kind: 'worktree', name: 'login', branch: 'feature/9-login', projectId: 'repo-web', project: null }
+]
+
+test('the focused workspace id wins over name and branch', () => {
+  assert.equal(findWorkspaceRow(rows17, { displayName: 'login', branch: 'other', workspaceId: 'identity:wt2:local:ccc' })?.id, 'identity:wt2:local:ccc')
+  assert.equal(findWorkspaceRow(rows17, { displayName: 'kyb', branch: 'develop', workspaceId: 'identity:gone' })?.id, 'identity:wt2:local:aaa')
+})
+
+test('the Orca project comes from the host row when this Orca reports it', () => {
+  assert.deepEqual(projectFromHostRow(rows17[0]), { orcaProjectId: 'repo-kyb', orcaProjectName: 'kyb' })
+  assert.deepEqual(projectFromHostRow(rows17[2]), { orcaProjectId: 'repo-web', orcaProjectName: 'repo-web' })
+  assert.deepEqual(projectFromHostRow({ ...rows17[0], projectId: null, project: null }), { orcaProjectId: null, orcaProjectName: null })
+  // Host API before 1.7: no project field, so the CLI has to say.
+  assert.equal(projectFromHostRow({ id: 'identity:x', kind: 'worktree', name: 'x', branch: null }), null)
+})
+
+test('mappings under CLI project ids are copied to the host ids of their repositories', () => {
+  const cli = [
+    { id: 'git:gitlab.example.com/backend/kyb', sourceRepoIds: ['repo-kyb', 'repo-kyb-ssh'] },
+    { id: 'git:gitlab.example.com/web/site', sourceRepoIds: ['repo-web'] }
+  ]
+  const map = { 'git:gitlab.example.com/backend/kyb': 'kyb', 'git:gitlab.example.com/web/site': 'web', 'repo-web': 'web-own' }
+  const hostIds = new Set(['repo-kyb', 'repo-kyb-ssh', 'repo-web'])
+  assert.deepEqual(unknownProjectKeys(map, hostIds), ['git:gitlab.example.com/backend/kyb', 'git:gitlab.example.com/web/site'])
+  assert.deepEqual(migrateProjectKeys(map, hostIds, cli), {
+    ...map,
+    'repo-kyb': 'kyb',
+    'repo-kyb-ssh': 'kyb'
+  })
+  // Already migrated: nothing to do.
+  assert.equal(migrateProjectKeys({ 'repo-kyb': 'kyb' }, hostIds, cli), null)
+})
+
+test('a host project id is turned into the CLI project id for worktree creation', () => {
+  const cli = [{ id: 'git:gitlab.example.com/backend/kyb', sourceRepoIds: ['repo-kyb'] }]
+  assert.equal(cliProjectIdFor('repo-kyb', cli), 'git:gitlab.example.com/backend/kyb')
+  assert.equal(cliProjectIdFor('git:gitlab.example.com/backend/kyb', cli), 'git:gitlab.example.com/backend/kyb')
+  assert.equal(cliProjectIdFor('unknown', cli), 'unknown')
+})
+
+test('agent states: what needs the person wins, and done only until it is seen', () => {
+  const links = { 'wt2:local:aaa': { id: 4077 }, 'wt2:local:bbb': { id: 4077 }, 'wt2:local:ccc': { id: 4081 } }
+  const withStatus: HostWorkspaceRow[] = [
+    { ...rows17[0], status: { state: 'working', unread: false } },
+    { ...rows17[1], status: { state: 'permission', unread: true } },
+    { ...rows17[2], status: { state: 'done', unread: true } }
+  ]
+  assert.deepEqual(agentStatesFor(withStatus, links), { '4077': 'permission', '4081': 'done' })
+  const seen: HostWorkspaceRow[] = [{ ...rows17[2], status: { state: 'done', unread: false } }, { ...rows17[0], status: { state: 'inactive', unread: false } }]
+  assert.deepEqual(agentStatesFor(seen, links), {})
+  assert.deepEqual(agentStatesFor([{ ...rows17[0], status: { state: 'working', unread: false } }], {}), {})
 })

@@ -45,7 +45,7 @@ import {
 } from 'orca'
 import { translate, translateErrorCode, type MessageKey } from './i18n'
 import { asCommentsMode, defaultInstructions, RECENT_COMMENTS, workspaceNameFor, type CommentsMode } from './launch'
-import type { LocatedWorkspace } from './orca-workspaces'
+import type { AgentState, LocatedWorkspace } from './orca-workspaces'
 import type { ConnectionStatus } from './protocol'
 import { textileToMarkdown } from './textile'
 import { ISSUE_BY_WORKSPACE, LINKS_MIGRATED, PROJECT_BY_ORCA_PROJECT, type AssignedIssue } from './links'
@@ -72,6 +72,8 @@ function errorText(e: unknown): string {
 interface WorkspaceInfo {
   branch: string
   displayName: string
+  /** The focused workspace's `workspace.list` id, when Orca gives it (host API 1.7). */
+  workspaceId?: string
   terminals: { id: string; title?: string }[]
   issueId: number | null
 }
@@ -86,6 +88,8 @@ const statuses = atom<IssueStatus[]>([])
 const projects = atom<Project[]>([])
 /** Pending follow-ups the worker recorded: agents that finished, linked workspaces removed. */
 const followups = atom<Followup[]>([])
+/** Agent state of linked tasks, by task number (host API 1.7); empty when Orca does not report it. */
+const agentStates = atom<Record<string, AgentState>>({})
 /** My open, overdue and urgent tasks, for the tiles above the list; null until the worker answers. */
 const counts = atom<OpenCounts | null>(null)
 /** The action form open on one follow-up, if any. */
@@ -273,12 +277,33 @@ async function loadIssues(): Promise<void> {
     set(issues, answer.issues)
     set(total, answer.total)
     void loadCounts()
+    void loadAgentStates()
   } catch (e) {
     set(error, errorText(e))
   } finally {
     set(loading, false)
   }
 }
+
+/** The badges are secondary too: on failure the rows simply show none. */
+async function loadAgentStates(): Promise<void> {
+  try {
+    set(agentStates, await plugin.request('redmine.agentStates'))
+  } catch {
+    set(agentStates, {})
+  }
+}
+
+let agentStatesTimer: ReturnType<typeof setTimeout> | undefined
+/** Agent status changes come in bursts: ask the worker once they settle, at most every 1.5 s. */
+function agentStatesSoon(): void {
+  if (agentStatesTimer !== undefined) return
+  agentStatesTimer = setTimeout(() => {
+    agentStatesTimer = undefined
+    void loadAgentStates()
+  }, AGENT_STATES_DEBOUNCE_MS)
+}
+const AGENT_STATES_DEBOUNCE_MS = 1500
 
 /** The tiles are secondary: when the count fails, they just stay hidden. */
 async function loadCounts(): Promise<void> {
@@ -304,9 +329,12 @@ async function afterConnect(status: ConnectionStatus): Promise<void> {
 /** The Orca project tied to the task's Redmine project; otherwise the focused workspace's. */
 function suggestedOrcaProject(issue: IssueDetail): string {
   const identifier = read(projects).find((p) => p.id === issue.projectId)?.identifier
-  const mapped = identifier
-    ? Object.entries(read(projectByOrcaProject)).find(([, redmine]) => redmine === identifier)?.[0]
-    : undefined
+  // Since 0.2.1 a mapping may sit under both the CLI and the host id: suggest one the picker lists.
+  const offered = new Set(read(orcaProjects).map((p) => p.id))
+  const keys = identifier
+    ? Object.entries(read(projectByOrcaProject)).filter(([, redmine]) => redmine === identifier).map(([key]) => key)
+    : []
+  const mapped = keys.find((key) => offered.has(key)) ?? keys[0]
   return mapped ?? read(located)?.orcaProjectId ?? ''
 }
 
@@ -568,7 +596,7 @@ function assignById(id: number): Promise<void> {
 let locateSeq = 0
 
 /** Finds which Orca project the workspace comes from, then reloads the list with its project. */
-async function locate(context: { displayName: string; branch: string } | null): Promise<void> {
+async function locate(context: { displayName: string; branch: string; workspaceId?: string } | null): Promise<void> {
   const seq = ++locateSeq
   let found: LocatedWorkspace | null = null
   let reason: string | null = null
@@ -576,7 +604,8 @@ async function locate(context: { displayName: string; branch: string } | null): 
     try {
       const answer = await plugin.request('redmine.locateWorkspace', {
         displayName: context.displayName,
-        branch: context.branch
+        branch: context.branch,
+        ...(context.workspaceId ? { workspaceId: context.workspaceId } : {})
       })
       found = answer.located
       if (answer.errorCode) reason = translateErrorCode(env.locale, answer.errorCode, answer.errorDetail ?? '') ?? answer.errorDetail ?? null
@@ -620,7 +649,9 @@ export function setup(ctx: PanelContext): void {
       const info = { ...context, issueId: taskRefFromWorkspace(context.displayName, context.branch) }
       set(workspace, info)
       // Another workspace may belong to another Orca project: locate it and reload the list.
-      if (previous?.displayName !== info.displayName || previous?.branch !== info.branch) void locate(info)
+      if (previous?.displayName !== info.displayName || previous?.branch !== info.branch || previous?.workspaceId !== info.workspaceId) {
+        void locate(info)
+      }
       if (!info.terminals.some((term) => term.id === read(terminalId))) set(terminalId, info.terminals[0]?.id ?? '')
     })
   )
@@ -633,6 +664,13 @@ export function setup(ctx: PanelContext): void {
     plugin.on('redmine.followupsChanged', ({ followups: next }) => set(followups, next))
   )
   ctx.subscriptions.push(plugin.on('redmine.countsChanged', (next) => set(counts, next)))
+  ctx.subscriptions.push(on('agent.status.changed', () => agentStatesSoon()))
+  ctx.subscriptions.push({
+    dispose: () => {
+      if (agentStatesTimer !== undefined) clearTimeout(agentStatesTimer)
+      agentStatesTimer = undefined
+    }
+  })
   void loadFollowups()
   void loadSettings()
   ctx.subscriptions.push(
@@ -1067,8 +1105,17 @@ interface RowOptions {
  * One task, compact: number, tracker and anything unusual (state, a high priority) on one line, the
  * subject, then the project and assignee when the list mixes them.
  */
+/** Agent badges: waiting on the person stands out, working is calm, done is good news. */
+const AGENT_TONE: Record<AgentState, 'neutral' | 'warning' | 'success'> = { working: 'neutral', permission: 'warning', done: 'success' }
+const AGENT_LABEL: Record<AgentState, MessageKey> = {
+  working: 'agentState.working',
+  permission: 'agentState.permission',
+  done: 'agentState.done'
+}
+
 function IssueRow({ issue, assigned, options }: { issue: IssueSummary; assigned: boolean; options: RowOptions }) {
   const urgent = URGENT_PRIORITY.test(issue.priority)
+  const agent = read(agentStates)[String(issue.id)]
   const meta = [
     ...(options.showProject ? [issue.project] : []),
     ...(options.showAssignee ? [issue.assignee ?? t('issue.unassigned')] : [])
@@ -1091,10 +1138,15 @@ function IssueRow({ issue, assigned, options }: { issue: IssueSummary; assigned:
         <Text size="xs" weight="medium">
           {issue.subject}
         </Text>
-        {meta.length > 0 ? (
-          <Text size="xs" muted truncate>
-            {meta.join(' · ')}
-          </Text>
+        {meta.length > 0 || agent ? (
+          <Row gap="xs" align="center">
+            {agent ? <Badge tone={AGENT_TONE[agent]}>{t(AGENT_LABEL[agent])}</Badge> : null}
+            {meta.length > 0 ? (
+              <Text size="xs" muted truncate>
+                {meta.join(' · ')}
+              </Text>
+            ) : null}
+          </Row>
         ) : null}
       </Stack>
     </ListItem>

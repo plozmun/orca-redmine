@@ -834,3 +834,25 @@ test('the panel shows a follow-up the worker records while it is open, without c
   assert.ok(view.find({ text: 'Agent finished on #4077' }))
   await view.unmount()
 })
+
+test('a task whose linked workspace has an agent at work shows it, and changes are picked up', async () => {
+  let states: Record<string, string> = { '4077': 'working' }
+  const view = await mount(panel, {
+    host: connectedHost([], { 'redmine.agentStates': (() => states) as never }),
+    locale: 'en'
+  })
+  assert.ok(view.find({ text: 'Agent working' }))
+  states = { '4077': 'done' }
+  await view.emit('agent.status.changed', {
+    workspaceId: 'identity:wt-1',
+    paneKey: 'p1',
+    state: 'done',
+    receivedAt: Date.now()
+  })
+  await new Promise((resolve) => setTimeout(resolve, 1600))
+  await view.settled()
+  assert.ok(view.find({ text: 'Agent done' }))
+  assert.equal(view.find({ text: 'Agent working' }), null)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})

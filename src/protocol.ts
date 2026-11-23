@@ -3,7 +3,7 @@
 // panel translates them with src/i18n; `*Detail` fields carry untranslated detail.
 import type { CommentsMode } from './launch'
 import type { Followup } from './followups'
-import type { CreatedWorktree, LocatedWorkspace } from './orca-workspaces'
+import type { AgentState, CreatedWorktree, LocatedWorkspace } from './orca-workspaces'
 import type { IssueDetail, IssueStatus, IssueSummary, OpenCounts, Project, TimeEntry } from './redmine'
 
 export interface ConnectionStatus {
@@ -37,7 +37,8 @@ declare module 'orca' {
      * why the project is unknown (the CLI failed or does not list it).
      */
     'redmine.locateWorkspace': {
-      input: { displayName: string; branch: string }
+      /** `workspaceId`: the focused workspace's `workspace.list` id, when Orca gives it (host API 1.7). */
+      input: { displayName: string; branch: string; workspaceId?: string }
       output: { located: LocatedWorkspace | null; errorCode?: string; errorDetail?: string }
     }
     'redmine.setStatus': { input: { id: number; statusId: number }; output: IssueDetail }
@@ -48,6 +49,8 @@ declare module 'orca' {
     'redmine.counts': { output: OpenCounts }
     /** The current user's time entries on a task. */
     'redmine.timeEntries': { input: { id: number }; output: TimeEntry[] }
+    /** Agent state of linked tasks, by task number: working, waiting for permission, or done and unseen. */
+    'redmine.agentStates': { output: Record<string, AgentState> }
     /** Orca projects (repositories) a workspace can be created in. */
     'redmine.orcaProjects': { output: { id: string; name: string }[] }
     /** Creates a new workspace for the task and, when asked, launches an agent with its context. */

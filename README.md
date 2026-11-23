@@ -31,6 +31,7 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 - **Send to terminal**: types the task prompt into a terminal of the current workspace. It **does not press Enter**, so you can review it first. A terminal line cannot carry the description and comments, so they go in a file (`<tmp>/orca-redmine/<id>.md`, readable only by you) that the prompt points to.
 - **Works without redmine-cli**: agents get the task text from the plugin. When the [`redmine` CLI](#redmine-cli) is installed, the prompt also tells the agent it can use it to update the task; when it is not, the panel suggests installing it.
 - **Command palette**: `Redmine: my open tasks`.
+- **Agent state in the list** (Orca with host API 1.7 or later): a task whose linked workspace has an agent working, waiting for permission, or done and not yet looked at shows it in its row, kept current while the panel is open.
 - **Status bar count**: the number of open tasks assigned to you, beside a flag, with the Redmine panel one press away. Amber when one is overdue, red when one has an urgent or immediate priority; hover for the counts. It refreshes every few minutes, right after the panel changes a task, and is hidden while Redmine is not connected or you turn it off in Settings. The worker therefore runs for as long as the plugin is enabled.
 - **English and Spanish UI**, following Orca's language.
 
@@ -47,7 +48,7 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 orca-plugin.json        Manifest: panel, command, settings and capabilities
 assets/                 Plugin icon and cover for the plugin page
 src/redmine.ts          Redmine REST API client (no Orca dependency)
-src/orca-workspaces.ts  Locates the focused workspace (host listing, then `orca` CLI) and creates worktrees
+src/orca-workspaces.ts  Locates the focused workspace and its project (host listing, then `orca` CLI), agent states, creates worktrees
 src/launch.ts           Workspace name and agent prompt for a task
 src/agent-env.ts        `REDMINE_ISSUE` and the optional prompt pointer for agents
 src/launch-here.ts      Prompt for "Launch agent here" when the context does not fit inline
@@ -116,7 +117,9 @@ Agents started in a linked workspace also find the task number in `REDMINE_ISSUE
 
 ## How the plugin knows a workspace's project
 
-The plugin API gives the focused workspace's name, branch and terminals. The worker matches the worktree by name and branch in Orca's `workspace.list` to get its stable id, which is what tasks are linked to. That host id (`identity:<key>`) is also what Orca's workspace methods take, so *Launch agent here* finds the focused workspace without the CLI. Orca's plugin API does not say which Orca project a workspace belongs to, so for that the worker runs `orca worktree list` and `orca project list` (cached for 15 s). If the CLI is not on the worker's PATH, set `ORCA_CLI`. Without the CLI, linked tasks and the branch suggestion still work; only the Redmine project filter and creating workspaces need it. On Orca versions without `workspace.list`, the CLI is used for the stable id too.
+The plugin API gives the focused workspace's name, branch, terminals and (host API 1.7 and later) its `workspace.list` id. The worker finds that row in Orca's `workspace.list`, by id or else by name and branch, to get the stable id tasks are linked to and, from host API 1.7, the Orca project it belongs to. That host id (`identity:<key>`) is also what Orca's workspace methods take, so *Launch agent here* finds the focused workspace without the CLI.
+
+On current Orca the `orca` CLI is therefore only needed to create a workspace (`orca worktree create`), to open the panel from the status bar, and once to move project mappings made by 0.2.0 or earlier: those were stored under the CLI's project ids (`git:<host>/<path>`), while the host names projects by repository id, so each mapping is copied to its repositories' ids (the old key stays). On older Orca the worker still runs `orca worktree list` and `orca project list` (cached for 15 s) for the project, and for the stable id when `workspace.list` is missing. If the CLI is not on the worker's PATH, set `ORCA_CLI`.
 
 Mappings (Orca project → Redmine project, workspace → task) live in the plugin's storage (`storage:own`), shared by the panel and the worker; 0.1.x kept them in the panel only and they are copied over once. Orca rejects Redmine URLs in `orca reference`, so they do not appear as native workspace links.
 
@@ -175,7 +178,7 @@ Environment variables are fixed when the agent starts: re-linking the workspace 
 
 Orca starts the worker when an event arrives, but a moment it never delivered (plugin disabled, Orca closed) is not replayed. Follow-ups live in the plugin's storage, so they are still there the next time the panel opens.
 
-The status bar item is why the worker keeps running while the plugin is enabled, instead of only when the panel or a command asks. It counts with `limit=1` Redmine queries (three, plus one for the priority list once per run) on the configured interval and after the panel changes something; pressing it runs `orca plugin open <plugin-key> --panel redmine`, so it needs the `orca` CLI on the worker's PATH like the project lookups do.
+The status bar item is why the worker keeps running while the plugin is enabled, instead of only when the panel or a command asks. It counts with `limit=1` Redmine queries (three, plus one for the priority list once per run) on the configured interval and after the panel changes something; pressing it runs `orca plugin open <plugin-key> --panel redmine`, so it needs the `orca` CLI on the worker's PATH.
 
 ## Development
 

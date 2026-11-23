@@ -1,7 +1,6 @@
-// Finds Orca workspaces for the worker. The stable workspace key comes from the host's
-// `workspace.list` when it can answer; the Orca CLI (`orca worktree list|create`, `orca project
-// list`) is still needed for the Orca project (repository) a workspace belongs to, as a fallback
-// for the key, and to create new worktrees.
+// Finds Orca workspaces for the worker. The stable workspace key and, from host API 1.7, the Orca
+// project come from the host's `workspace.list`; the Orca CLI (`orca worktree list|create`, `orca
+// project list`) is the fallback for older Orca, and still creates new worktrees.
 import { RedmineError } from './redmine'
 
 export interface WorktreeRow {
@@ -17,6 +16,8 @@ export interface WorktreeRow {
 export interface OrcaProjectRow {
   id: string
   displayName?: string
+  /** The host's ids for this project's repositories (`workspace.list` `projectId`, `project.list` `id`). */
+  sourceRepoIds?: string[]
 }
 
 export interface LocatedWorkspace {
@@ -42,6 +43,8 @@ function fallbackProjectName(projectId: string): string {
 export interface FocusedContext {
   displayName: string
   branch: string
+  /** The focused workspace's `workspace.list` id, when Orca gives it (host API 1.7). */
+  workspaceId?: string
 }
 
 /**
@@ -112,13 +115,30 @@ export function describeWorktree(
   return row ? { workspaceKey: cliKey(row), name: row.displayName ?? null, ...projectOf(listing, row) } : null
 }
 
-/** A row of the host's `workspace.list`. */
+/** Agent state of a workspace, as `workspace.list { includeStatus: true }` reports it (host API 1.7). */
+export interface HostWorkspaceStatus {
+  state: 'working' | 'permission' | 'done' | 'active' | 'inactive'
+  unread: boolean
+}
+
+/** A row of the host's `workspace.list`. `project`/`projectId` arrive with host API 1.7. */
 export interface HostWorkspaceRow {
   id: string
   kind: 'worktree' | 'folder'
   name: string
   path?: string
   branch: string | null
+  project?: string | null
+  projectId?: string | null
+  status?: HostWorkspaceStatus
+}
+
+/** A row of the host's `project.list` (host API 1.7). */
+export interface HostProjectRow {
+  id: string
+  name: string
+  kind: 'git' | 'folder'
+  hidden?: boolean
 }
 
 const HOST_ID_PREFIX = 'identity:'
@@ -136,9 +156,68 @@ export function keyFromHostId(id: string): string | null {
  * every other host workspace method takes, `agent.launch` included. Folders never match.
  */
 export function findWorkspaceId(rows: readonly HostWorkspaceRow[], context: FocusedContext): string | null {
+  return findWorkspaceRow(rows, context)?.id ?? null
+}
+
+/**
+ * The focused worktree's row: by the `workspaceId` Orca gives the focused workspace (host API 1.7),
+ * else by name and branch. Folders never match.
+ */
+export function findWorkspaceRow(rows: readonly HostWorkspaceRow[], context: FocusedContext): HostWorkspaceRow | null {
   const worktrees = rows.filter((r) => r.kind === 'worktree')
-  const pick = pickRow(worktrees, (r) => r.name, (r) => r.branch, context)
-  return pick ? pick.id : null
+  const byId = context.workspaceId ? worktrees.find((r) => r.id === context.workspaceId) : undefined
+  return byId ?? pickRow(worktrees, (r) => r.name, (r) => r.branch, context)
+}
+
+/**
+ * The Orca project of a host row, or null when this Orca does not report it (host API before 1.7:
+ * no `projectId` field at all). A row that reports `projectId: null` has no project.
+ */
+export function projectFromHostRow(row: HostWorkspaceRow): Pick<LocatedWorkspace, 'orcaProjectId' | 'orcaProjectName'> | null {
+  if (row.projectId === undefined) return null
+  const projectId = row.projectId
+  return {
+    orcaProjectId: projectId,
+    orcaProjectName: projectId ? (row.project || fallbackProjectName(projectId)) : null
+  }
+}
+
+/**
+ * Copies project mappings stored under ids the host does not know (the CLI's logical project ids,
+ * `git:<host>/<path>`, used up to 0.2.0) to the host ids of that project's repositories. Old keys
+ * are kept, and a host id that already has a mapping keeps it. Null when nothing changes.
+ */
+export function migrateProjectKeys(
+  map: Readonly<Record<string, string>>,
+  hostIds: ReadonlySet<string>,
+  cliProjects: readonly OrcaProjectRow[]
+): Record<string, string> | null {
+  const next = { ...map }
+  let changed = false
+  for (const [key, redmineProject] of Object.entries(map)) {
+    if (hostIds.has(key)) continue
+    const project = cliProjects.find((p) => p.id === key)
+    for (const repoId of project?.sourceRepoIds ?? []) {
+      if (next[repoId] !== undefined) continue
+      next[repoId] = redmineProject
+      changed = true
+    }
+  }
+  return changed ? next : null
+}
+
+/** Project ids in a mapping that the host does not list: the ones a migration would look up. */
+export function unknownProjectKeys(map: Readonly<Record<string, string>>, hostIds: ReadonlySet<string>): string[] {
+  return Object.keys(map).filter((key) => !hostIds.has(key))
+}
+
+/**
+ * The CLI project id `orca worktree create --project` takes for a project picked by its host id
+ * (a repository id). An id the CLI already lists, or one it does not know, is passed unchanged.
+ */
+export function cliProjectIdFor(id: string, cliProjects: readonly OrcaProjectRow[]): string {
+  if (cliProjects.some((p) => p.id === id)) return id
+  return cliProjects.find((p) => p.sourceRepoIds?.includes(id))?.id ?? id
 }
 
 /** The link key of the focused worktree in the host's listing, or null. Folders are never linked. */
@@ -249,4 +328,37 @@ export async function createWorktree(o: CreateWorktreeOptions): Promise<CreatedW
   const created = parseCreated(await runOrcaJson(createWorktreeArgs(o), 115_000))
   clearOrcaCache()
   return created
+}
+
+/** What the task list shows about a linked workspace's agent. */
+export type AgentState = 'working' | 'permission' | 'done'
+
+const AGENT_STATE_RANK: Record<AgentState, number> = { permission: 3, working: 2, done: 1 }
+
+/** The badge a workspace status earns: working, waiting for permission, or done and not yet seen. */
+function agentStateOf(status: HostWorkspaceStatus | undefined): AgentState | null {
+  if (!status) return null
+  if (status.state === 'working' || status.state === 'permission') return status.state
+  return status.state === 'done' && status.unread ? 'done' : null
+}
+
+/**
+ * Agent state per linked task (by task number), from `workspace.list { includeStatus: true }` and the
+ * link store. A task linked to several workspaces shows the one that most needs the person:
+ * permission, then working, then done.
+ */
+export function agentStatesFor(
+  rows: readonly HostWorkspaceRow[],
+  links: Readonly<Record<string, { id: number }>>
+): Record<string, AgentState> {
+  const states: Record<string, AgentState> = {}
+  for (const row of rows) {
+    const key = keyFromHostId(row.id)
+    const issue = key ? links[key] : undefined
+    const state = agentStateOf(row.status)
+    if (!issue || !state) continue
+    const current = states[String(issue.id)]
+    if (!current || AGENT_STATE_RANK[state] > AGENT_STATE_RANK[current]) states[String(issue.id)] = state
+  }
+  return states
 }

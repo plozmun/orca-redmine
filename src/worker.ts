@@ -7,21 +7,28 @@ import { LaunchedTasks, pathFromCliId, withIssueEnv, withPromptPointer } from '.
 import { detectRedmineCli, writeContextFile } from './agent-files'
 import { asCommentsMode, buildContextBlock, buildLaunchPrompt, CONTEXT_MAX_CHARS, sendPrompt, workspaceNameFor } from './launch'
 import {
+  agentStatesFor,
   clearOrcaCache,
+  cliProjectIdFor,
   createWorktree,
   describeWorktree,
   findWorkspaceId,
+  findWorkspaceRow,
   listOrca,
   keyFromHostId,
-  matchHostWorkspace,
   matchWorktreeWithRow,
+  migrateProjectKeys,
   projectForKey,
+  projectFromHostRow,
+  unknownProjectKeys,
   runOrcaJson,
   shortBranch,
   type CreatedWorktree,
   type CreateWorktreeOptions,
   type FocusedContext,
+  type HostProjectRow,
   type HostWorkspaceRow,
+  type LocatedWorkspace,
   type OrcaListing
 } from './orca-workspaces'
 import { contextFilePrompt, fitsLaunchPrompt } from './launch-here'
@@ -29,7 +36,7 @@ import type { ConnectionStatus } from './protocol'
 import { isBookableDay } from './days'
 import { normalizeBaseUrl, projectSubtree, RedmineClient, RedmineError, type IssueDetail, type OpenCounts } from './redmine'
 import { branchFromTemplate, taskRefFromWorkspace } from './task-ref'
-import { ISSUE_BY_WORKSPACE, PROJECT_BY_ORCA_PROJECT, WORKSPACE_IDS_BY_KEY, type AssignedIssue } from './links'
+import { ISSUE_BY_WORKSPACE, PROJECT_BY_ORCA_PROJECT, PROJECT_KEYS_MIGRATED, WORKSPACE_IDS_BY_KEY, type AssignedIssue } from './links'
 import {
   addFollowup,
   AgentRunTracker,
@@ -149,6 +156,8 @@ interface LocatedWorkspaceMatch {
   key: string
   id: string
   path: string | null
+  /** The Orca project from the host row; null when this Orca does not report it (host API < 1.7). */
+  project: Pick<LocatedWorkspace, 'orcaProjectId' | 'orcaProjectName'> | null
 }
 
 /** Minutes between status bar refreshes: the `statusBarMinutes` setting, 1–60, 5 by default. */
@@ -228,10 +237,10 @@ async function hostWorkspaceMatch(orca: OrcaWorkerApi, context: FocusedContext):
   if (!orca.host.has('workspace.list')) return null
   try {
     const { workspaces } = (await orca.host.call('workspace.list', {})) as { workspaces: HostWorkspaceRow[]; truncated: boolean }
-    const key = matchHostWorkspace(workspaces, context)
-    if (!key) return null
-    const row = workspaces.find((w) => keyFromHostId(w.id) === key)
-    return { key, id: row?.id ?? `identity:${key}`, path: row?.path ?? null }
+    const row = findWorkspaceRow(workspaces, context)
+    const key = row ? keyFromHostId(row.id) : null
+    if (!row || !key) return null
+    return { key, id: row.id, path: row.path ?? null, project: projectFromHostRow(row) }
   } catch (error) {
     orca.log(`workspace.list: ${errorParts(error).errorDetail}`)
     return null
@@ -275,6 +284,56 @@ async function projectWithCli(key: string) {
   return projectForKey(await orcaLister(), key)
 }
 
+/**
+ * The project id `orca worktree create` takes for one the picker offered. With `project.list` the
+ * picker holds host repository ids, which the CLI names by their logical project; if the CLI listing
+ * fails, the id is passed as is and the create reports the problem.
+ */
+async function creatableProjectId(orca: OrcaWorkerApi, id: string): Promise<string> {
+  if (!orca.host.has('project.list')) return id
+  try {
+    return cliProjectIdFor(id, (await orcaLister()).projects)
+  } catch (error) {
+    orca.log(`launchWorkspace (project id): ${errorParts(error).errorDetail}`)
+    return id
+  }
+}
+
+/** The host's project ids (repository ids): `project.list`, else the projects `workspace.list` names. */
+async function hostProjectIds(orca: OrcaWorkerApi): Promise<Set<string>> {
+  if (orca.host.has('project.list')) {
+    const { projects } = (await orca.host.call('project.list', {})) as { projects: HostProjectRow[] }
+    return new Set(projects.map((p) => p.id))
+  }
+  const { workspaces } = (await orca.host.call('workspace.list', {})) as { workspaces: HostWorkspaceRow[] }
+  return new Set(workspaces.map((w) => w.projectId).filter((id): id is string => Boolean(id)))
+}
+
+/**
+ * Up to 0.2.0 project mappings were stored under the CLI's project ids (`git:<host>/<path>`); the
+ * host names projects by repository id. Copies each old mapping to its repositories' ids, once:
+ * the flag is set only after the CLI answered (or nothing needed it), so a failure retries later.
+ * Mappings could only be made with the CLI, so it is normally there for this one run.
+ */
+async function migrateProjectMappings(orca: OrcaWorkerApi): Promise<void> {
+  if ((await orca.storage.get(PROJECT_KEYS_MIGRATED)) === true) return
+  try {
+    const map = await readMap<string>(orca, PROJECT_BY_ORCA_PROJECT)
+    const hostIds = await hostProjectIds(orca)
+    if (unknownProjectKeys(map, hostIds).length > 0) {
+      const next = migrateProjectKeys(map, hostIds, (await orcaLister()).projects)
+      if (next) {
+        // Read again right before writing: the panel may have mapped a project meanwhile.
+        await orca.storage.set(PROJECT_BY_ORCA_PROJECT, { ...next, ...(await readMap<string>(orca, PROJECT_BY_ORCA_PROJECT)) })
+        orca.log(`project mappings: copied to the host project ids`)
+      }
+    }
+    await orca.storage.set(PROJECT_KEYS_MIGRATED, true)
+  } catch (error) {
+    orca.log(`project mappings: ${errorParts(error).errorDetail}`)
+  }
+}
+
 /** Rejects with `timeout` after `ms`; the work itself is not cancelled. */
 function within<T>(ms: number, work: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined
@@ -297,6 +356,8 @@ async function readMap<T>(orca: OrcaWorkerApi, key: string): Promise<Record<stri
 async function describeCreated(orca: OrcaWorkerApi, workspaceId: string, path: string) {
   let key = keyFromHostId(workspaceId)
   let name: string | null = null
+  let orcaProjectId: string | null = null
+  let projectKnown = false
   if (orca.host.has('workspace.list')) {
     try {
       const { workspaces } = (await orca.host.call('workspace.list', {})) as { workspaces: HostWorkspaceRow[] }
@@ -304,19 +365,25 @@ async function describeCreated(orca: OrcaWorkerApi, workspaceId: string, path: s
       if (row) {
         key ??= keyFromHostId(row.id)
         name = row.name
+        const project = projectFromHostRow(row)
+        if (project) {
+          orcaProjectId = project.orcaProjectId
+          projectKnown = true
+        }
       }
     } catch (error) {
       orca.log(`workspace.list: ${errorParts(error).errorDetail}`)
     }
   }
-  let orcaProjectId: string | null = null
+  // Host API 1.7 told everything: no CLI.
+  if (key && name && projectKnown) return { key, name, orcaProjectId }
   try {
     clearOrcaCache()
     const found = describeWorktree(await orcaLister(), { id: workspaceId, key })
     if (found) {
       key ??= found.workspaceKey
       name ??= found.name
-      orcaProjectId = found.orcaProjectId
+      if (!projectKnown) orcaProjectId = found.orcaProjectId
     }
   } catch (error) {
     orca.log(`workspace.created (CLI): ${errorParts(error).errorDetail}`)
@@ -438,6 +505,12 @@ async function mappedWorkspaceKey(orca: OrcaWorkerApi, workspaceId: string, path
   const map = await readMap<string>(orca, WORKSPACE_IDS_BY_KEY)
   const fromId = pathFromCliId(workspaceId)
   return map[workspaceId] ?? (fromId ? map[fromId] : null) ?? (path ? (map[path] ?? null) : null)
+}
+
+/** The `workspace.list` id an event names the workspace by (host API 1.7), when Orca sends it. */
+function listedId(event: object): string | null {
+  const id = (event as { workspaceListId?: unknown }).workspaceListId
+  return typeof id === 'string' && id ? id : null
 }
 
 /**
@@ -593,9 +666,11 @@ export default function activate(orca: OrcaWorkerApi): void {
   })
 
   // Any new worktree that names a task the user can see gets linked to it, whoever created it.
-  orca.events.on('workspace.created', async ({ workspaceId, kind, path, branch }) => {
+  orca.events.on('workspace.created', async (event) => {
+    const { workspaceId, kind, path, branch } = event
     if (kind !== 'worktree') return
-    const { key, name, orcaProjectId } = await describeCreated(orca, workspaceId, path)
+    const listId = listedId(event)
+    const { key, name, orcaProjectId } = await describeCreated(orca, listId ?? workspaceId, path)
     if (!key) {
       orca.log(`workspace.created: no link key for ${workspaceId}`)
       return
@@ -615,7 +690,7 @@ export default function activate(orca: OrcaWorkerApi): void {
         orca.log(`workspace.created: linked ${key} to #${issue.id}`)
       }
       // Keep the ids Orca's later events (and the removal, when the worktree is gone) may name it by.
-      await rememberWorkspaceIds(orca, key, [workspaceId, path])
+      await rememberWorkspaceIds(orca, key, [workspaceId, listId, path])
       if (started.has(key)) return
       started.add(key)
       await recordWorkStarted(orca, redmine, issue, name, shortBranch(branch))
@@ -628,14 +703,15 @@ export default function activate(orca: OrcaWorkerApi): void {
   // notification). Nothing is written to Redmine here: only the person's actions in the panel are.
   orca.events.on('agent.status.changed', async (event) => {
     const change = agentRuns.observe(event)
-    if (!change || !event.workspaceId) return
+    const workspaceId = listedId(event) ?? event.workspaceId
+    if (!change || !workspaceId) return
     try {
-      const key = await eventWorkspaceKey(orca, event.workspaceId)
+      const key = await eventWorkspaceKey(orca, workspaceId)
       if (!key) return
       const linked = (await readMap<AssignedIssue>(orca, ISSUE_BY_WORKSPACE))[key]
       if (!linked) return
-      const info = await workspaceInfoFor(orca, event.workspaceId, key)
-      await rememberWorkspaceIds(orca, key, [event.workspaceId, info.path])
+      const info = await workspaceInfoFor(orca, workspaceId, key)
+      await rememberWorkspaceIds(orca, key, [event.workspaceId, workspaceId, info.path])
       const mode = asAgentNotification(await orca.settings.get(AGENT_NOTIFICATION_SETTING))
       if (change.transition === 'blocked') {
         if (shouldNotify(mode, 'blocked')) await notifyAgent(orca, 'blocked', linked)
@@ -657,11 +733,14 @@ export default function activate(orca: OrcaWorkerApi): void {
   })
 
   // A linked worktree went away: its link would otherwise stay forever and the task never gets closed.
-  orca.events.on('workspace.removed', async ({ workspaceId, kind, path }) => {
+  orca.events.on('workspace.removed', async (event) => {
+    const { workspaceId, kind, path } = event
     if (kind !== 'worktree') return
     try {
-      const key = await eventWorkspaceKey(orca, workspaceId, path)
-      await forgetWorkspaceIds(orca, key, [workspaceId, path])
+      const listId = listedId(event)
+      // The listed id carries the link key itself (host API 1.7); older Orca needs the alias map.
+      const key = (listId ? keyFromHostId(listId) : null) ?? (await eventWorkspaceKey(orca, workspaceId, path))
+      await forgetWorkspaceIds(orca, key, [workspaceId, listId, path])
       if (!key) return
       const links = await readMap<AssignedIssue>(orca, ISSUE_BY_WORKSPACE)
       const linked = links[key]
@@ -725,6 +804,11 @@ export default function activate(orca: OrcaWorkerApi): void {
       // Remembered for a later `workspace.removed`, even for a workspace the panel linked by hand.
       rememberLocatedIds(orca, found.key, [found.id, found.path])
       const key = found.key
+      // Host API 1.7 names the project too: no CLI at all, after moving old mappings to its ids.
+      if (found.project) {
+        await migrateProjectMappings(orca)
+        return { located: { workspaceKey: key, ...found.project } }
+      }
       // The workspace is known; only its Orca project needs the CLI, and failing that is not fatal.
       try {
         const project = await projectWithCli(key)
@@ -789,18 +873,36 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   orca.panels.handle('redmine.cli', async () => ({ version: await redmineCli() }))
 
-  orca.panels.handle('redmine.orcaProjects', async () =>
-    (await orcaLister()).projects
-      .map((p) => ({ id: p.id, name: p.displayName ?? p.id }))
-      .sort((a, b) => a.name.localeCompare(b.name))
-  )
+  // Git projects a worktree can be created in: from the host when it lists them (same ids as the
+  // located workspace's project), else from the CLI.
+  orca.panels.handle('redmine.orcaProjects', async () => {
+    const rows = orca.host.has('project.list')
+      ? ((await orca.host.call('project.list', {})) as { projects: HostProjectRow[] }).projects
+          .filter((p) => p.kind === 'git' && !p.hidden)
+          .map((p) => ({ id: p.id, name: p.name || p.id }))
+      : (await orcaLister()).projects.map((p) => ({ id: p.id, name: p.displayName ?? p.id }))
+    return rows.sort((a, b) => a.name.localeCompare(b.name))
+  })
+
+  // Which linked tasks have an agent working, waiting for permission, or done and unseen. Empty when
+  // this Orca does not report agent status (`includeStatus` is host API 1.7; older hosts refuse it).
+  orca.panels.handle('redmine.agentStates', async () => {
+    if (!orca.host.has('workspace.list')) return {}
+    try {
+      const { workspaces } = (await orca.host.call('workspace.list', { includeStatus: true })) as { workspaces: HostWorkspaceRow[] }
+      return agentStatesFor(workspaces, await readMap<AssignedIssue>(orca, ISSUE_BY_WORKSPACE))
+    } catch (error) {
+      orca.log(`agentStates: ${errorParts(error).errorDetail}`)
+      return {}
+    }
+  })
 
   orca.panels.handle('redmine.launchWorkspace', async (input) => {
     const issue = await (await client(orca)).getIssue(input.issueId)
     const name = workspaceNameFor(issue)
     const options = await contextOptions(orca)
     const created = await orcaCreator({
-      orcaProjectId: input.orcaProjectId,
+      orcaProjectId: await creatableProjectId(orca, input.orcaProjectId),
       name,
       agent: input.agent,
       prompt: buildLaunchPrompt(issue, input.instructions, input.locale, {

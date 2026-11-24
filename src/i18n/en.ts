@@ -230,7 +230,21 @@ export const en = {
   'statusBar.tooltip': 'Open tasks assigned to you: {total}',
   'statusBar.overdue': 'overdue: {count}',
   'statusBar.urgent': 'urgent: {count}',
-  'statusBar.error': 'Redmine: {reason}'
+  'statusBar.error': 'Redmine: {reason}',
+
+  // Agents of a task's linked workspaces, and resuming one from a follow-up
+  'agents.section': 'Agents',
+  'agents.none': 'No agents in this workspace',
+  'agents.show': 'Show',
+  'agents.unknown': 'Agent',
+  'agentRow.working': 'Working',
+  'agentRow.blocked': 'Needs input',
+  'agentRow.waiting': 'Waiting',
+  'agentRow.done': 'Done',
+  'followup.resume': 'Resume agent',
+  'followup.resumed': 'Agent resumed',
+  'followup.alreadyRunning': 'That agent is already running: showing its terminal',
+  'errors.agent_resume': 'Could not resume the agent ({detail})'
 }
 
 export type MessageKey = keyof typeof en

@@ -11,7 +11,7 @@
     "alt": "The Redmine logo on a white tile beside the title “Redmine for Orca” and the tagline “Your Redmine tasks, tied to workspaces and agents.”"
   },
   "engines": {
-    "orca": ">=1.4.248"
+    "orca": ">=1.4.260"
   },
   "execution": "trusted-worker",
   "pluginApi": 1,
@@ -221,6 +221,9 @@
     },
     {
       "kind": "agent:launch"
+    },
+    {
+      "kind": "workspace:write"
     }
   ]
 }

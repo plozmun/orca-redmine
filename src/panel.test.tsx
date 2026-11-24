@@ -68,6 +68,8 @@ function connectedHost(
       'redmine.followups.get': () => ({ followups: [] }),
       'redmine.followups.dismiss': () => ({ followups: [] }),
       'redmine.launchHereSupport': () => ({ available: true }),
+      'redmine.agentActionsSupport': () => ({ show: false, resume: false }),
+      'redmine.taskAgents': () => ({ workspaces: [] }),
       ...extra
     }
   })
@@ -854,5 +856,155 @@ test('a task whose linked workspace has an agent at work shows it, and changes a
   assert.ok(view.find({ text: 'Agent done' }))
   assert.equal(view.find({ text: 'Agent working' }), null)
   assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+// --- Agents of a task's linked workspaces, and resuming one ---
+
+const taskAgentsAnswer = (state: 'working' | 'done') => ({
+  workspaces: [
+    {
+      key: 'wt-a',
+      name: '4077-checkout',
+      agents: [{ terminalId: 't1', title: 'Claude Code', agent: 'claude', state, stateStartedAt: Date.now() - 60_000 }]
+    }
+  ]
+})
+
+test('the detail lists the agents of the task’s linked workspaces and shows one', async () => {
+  const shown: unknown[] = []
+  const host = connectedHost([], {
+    'redmine.agentActionsSupport': () => ({ show: true, resume: false }),
+    'redmine.taskAgents': () => ({
+      workspaces: [
+        {
+          key: 'wt-a',
+          name: '4077-checkout',
+          agents: [
+            { terminalId: 't1', title: 'Claude Code', agent: 'claude', state: 'working', stateStartedAt: Date.now() - 300_000 },
+            { terminalId: 't2', title: 'Codex', agent: 'codex', state: 'blocked', stateStartedAt: Date.now() }
+          ]
+        },
+        {
+          key: 'wt-b',
+          name: '4077-api',
+          agents: [{ terminalId: null, title: null, agent: 'gemini', state: 'done', stateStartedAt: Date.now() }]
+        }
+      ]
+    }),
+    'redmine.showAgent': (input: unknown) => {
+      shown.push(input)
+      return { focused: true }
+    }
+  })
+  const view = await mount(panel, { host, locale: 'en' })
+  await view.emit('workspace.changed', ws('shop-a'))
+  await view.press({ type: 'ListItem' })
+  await view.settled()
+
+  assert.ok(drawn(view, 'AGENTS'))
+  assert.ok(drawn(view, '4077-checkout'), 'workspace name missing')
+  assert.ok(drawn(view, 'Claude Code'), 'agent title missing')
+  assert.ok(drawn(view, 'Needs input'), 'agent state missing')
+  assert.ok(drawn(view, '4077-api') && drawn(view, 'Done'))
+  // Only the two agents with a terminal offer "Show".
+  assert.equal(view.findAll({ text: 'Show' }).length, 2)
+
+  await view.press({ text: 'Show' })
+  assert.deepEqual(shown, [{ terminalId: 't1' }])
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('the agents section follows status changes of the open task’s workspaces', async () => {
+  let state: 'working' | 'done' = 'working'
+  const host = connectedHost(
+    [],
+    {
+      'redmine.taskAgents': () => taskAgentsAnswer(state)
+    },
+    {},
+    { 'links.issueByWorkspace': { 'wt-a': { id: 4077, subject: 'Checkout screen' } } }
+  )
+  const view = await mount(panel, { host, locale: 'en' })
+  await view.emit('workspace.changed', ws('shop-a'))
+  await view.settled()
+  assert.ok(drawn(view, 'Working'))
+
+  state = 'done'
+  await view.emit('agent.status.changed', {
+    workspaceId: 'identity:wt-a',
+    workspaceListId: 'identity:wt-a',
+    paneKey: 'p1',
+    state: 'done',
+    receivedAt: Date.now()
+  })
+  await new Promise((resolve) => setTimeout(resolve, 1600))
+  await view.settled()
+  assert.ok(drawn(view, 'Done'))
+  assert.equal(drawn(view, 'Working'), false)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('an agent follow-up with its session resumes it, and says when it is already running', async () => {
+  const resumable: Followup = { ...agentDone, workspaceId: 'identity:wt-a', agent: 'claude', sessionId: 'sess-1' }
+  const resumed: unknown[] = []
+  const shown: unknown[] = []
+  const view = await mount(panel, {
+    host: followupHost([resumable], [], [], {
+      'redmine.agentActionsSupport': () => ({ show: true, resume: true }),
+      'redmine.resumeAgent': (input: unknown) => {
+        resumed.push(input)
+        return { terminalId: 't7', started: true }
+      },
+      'redmine.showAgent': (input: unknown) => {
+        shown.push(input)
+        return { focused: true }
+      }
+    }),
+    locale: 'en'
+  })
+  await view.press({ text: 'Resume agent' })
+  assert.deepEqual(resumed, [{ followupId: resumable.id }])
+  assert.ok(view.find({ text: 'Agent resumed' }))
+  assert.ok(view.find({ text: 'Agent finished on #4077' }), 'the follow-up stays')
+  assert.deepEqual(shown, [], 'a started session needs no focus')
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+
+  // Already running: the panel says so and shows that terminal.
+  const second = await mount(panel, {
+    host: followupHost([resumable], [], [], {
+      'redmine.agentActionsSupport': () => ({ show: true, resume: true }),
+      'redmine.resumeAgent': () => ({ terminalId: 't7', started: false }),
+      'redmine.showAgent': (input: unknown) => {
+        shown.push(input)
+        return { focused: true }
+      }
+    }),
+    locale: 'en'
+  })
+  await second.press({ text: 'Resume agent' })
+  assert.ok(second.find({ text: 'That agent is already running: showing its terminal' }))
+  assert.deepEqual(shown, [{ terminalId: 't7' }])
+  assert.ok(second.find({ text: 'Agent finished on #4077' }))
+  assert.deepEqual(second.errors, [])
+  await second.unmount()
+})
+
+test('a follow-up without its session or without Orca support offers no Resume agent', async () => {
+  // 0.2.x follow-ups have none of the three fields.
+  let view = await mount(panel, { host: followupHost([agentDone], [], []), locale: 'en' })
+  assert.equal(view.find({ text: 'Resume agent' }), null)
+  await view.unmount()
+
+  // A follow-up that knows its session, in an Orca that cannot resume agents.
+  const resumable: Followup = { ...agentDone, workspaceId: 'identity:wt-a', agent: 'claude', sessionId: 'sess-1' }
+  view = await mount(panel, {
+    host: followupHost([resumable], [], [], { 'redmine.agentActionsSupport': () => ({ show: false, resume: false }) }),
+    locale: 'en'
+  })
+  assert.equal(view.find({ text: 'Resume agent' }), null)
   await view.unmount()
 })

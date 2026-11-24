@@ -89,6 +89,14 @@ declare module 'orca' {
       input: { issueId: number; agent: string; instructions: string; locale: string; comments?: CommentsMode }
       output: { terminalId: string; workspaceKey: string | null }
     }
+    /** Agents in the workspaces linked to the task, newest links first (at most 5). */
+    'redmine.taskAgents': { input: { issueId: number }; output: { workspaces: TaskWorkspaceAgents[] } }
+    /** Which agent actions this Orca offers and the user approved. */
+    'redmine.agentActionsSupport': { output: { show: boolean; resume: boolean } }
+    /** Focuses one listed agent's terminal; refuses one the last `redmine.taskAgents` did not name. */
+    'redmine.showAgent': { input: { terminalId: string }; output: { focused: boolean } }
+    /** Resumes the session of an "agent finished" follow-up; `started` is false when it already runs. */
+    'redmine.resumeAgent': { input: { followupId: string }; output: { terminalId: string; started: boolean } }
   }
   interface PluginPanelEvents {
     /** After a status change, comment or time entry: open panels reload the issue. */
@@ -98,4 +106,21 @@ declare module 'orca' {
     /** After the worker counted my tasks again (status bar tick or a change from a panel). */
     'redmine.countsChanged': OpenCounts
   }
+}
+
+/** One agent of a workspace linked to a task, as `agents.list` reports it. */
+export interface TaskAgent {
+  terminalId: string | null
+  title: string | null
+  agent: string | null
+  state: 'working' | 'blocked' | 'waiting' | 'done'
+  stateStartedAt: number
+}
+
+/** The agents of one workspace linked to a task. */
+export interface TaskWorkspaceAgents {
+  /** The workspace's link key. */
+  key: string
+  name: string
+  agents: TaskAgent[]
 }

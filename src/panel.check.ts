@@ -49,7 +49,9 @@ const sample = {
     'redmine.orcaProjects': () => [{ id: 'git:shop', name: 'shop' }],
     'redmine.launchHereSupport': () => ({ available: true }),
     'redmine.counts': () => ({ total: 12, overdue: 2, urgent: 1 }),
-    'redmine.agentStates': () => ({ '4077': 'working', '4081': 'permission' })
+    'redmine.agentStates': () => ({ '4077': 'working', '4081': 'permission' }),
+    'redmine.agentActionsSupport': () => ({ show: true, resume: true }),
+    'redmine.taskAgents': () => ({ workspaces: [] })
   },
   events: [
     {
@@ -131,5 +133,78 @@ export default defineCheck({
     ...sample,
     settings: { url: 'http://127.0.0.1:9', statusBar: true, statusBarMinutes: 5 },
     secrets: { apiKey: 'x' }
+  },
+  // The detail of a linked task with agents in its linked workspaces: each row and its "Show".
+  'detail-agents': {
+    ...sample,
+    requests: {
+      ...sample.requests,
+      'redmine.taskAgents': () => ({
+        workspaces: [
+          {
+            key: 'wt-1',
+            name: '4077-checkout-screen',
+            agents: [
+              {
+                terminalId: 't1',
+                title: 'Claude Code',
+                agent: 'claude',
+                state: 'working' as const,
+                stateStartedAt: Date.parse('2026-11-03T07:00:00Z')
+              },
+              {
+                terminalId: 't2',
+                title: 'Codex',
+                agent: 'codex',
+                state: 'blocked' as const,
+                stateStartedAt: Date.parse('2026-11-03T07:20:00Z')
+              }
+            ]
+          },
+          {
+            key: 'wt-2',
+            name: '4077-api',
+            agents: [
+              {
+                terminalId: null,
+                title: null,
+                agent: 'gemini',
+                state: 'done' as const,
+                stateStartedAt: Date.parse('2026-11-03T06:00:00Z')
+              }
+            ]
+          }
+        ]
+      })
+    },
+    persisted: {
+      plugin: {
+        'redmine.projectByOrcaProject': { 'git:shop': 'shop' },
+        'redmine.issueByWorkspace': { 'wt-1': { id: 4077, subject: 'Checkout screen with saved cards' } }
+      }
+    }
+  },
+  // A finished agent's follow-up that knows its workspace, kind and session: it offers "Resume agent".
+  'followup-resume': {
+    ...sample,
+    requests: {
+      ...sample.requests,
+      'redmine.followups.get': () => ({
+        followups: [
+          {
+            id: 'agentDone:4077:1',
+            kind: 'agentDone' as const,
+            issueId: 4077,
+            workspaceName: '4077-checkout-screen',
+            at: Date.parse('2026-11-03T07:30:00Z'),
+            hours: 1.25,
+            workspaceId: 'identity:wt-1',
+            agent: 'claude',
+            sessionId: 'session-abc'
+          }
+        ]
+      })
+    },
+    persisted: { plugin: { 'redmine.projectByOrcaProject': { 'git:shop': 'shop' } } }
   }
 })

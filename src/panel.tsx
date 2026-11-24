@@ -45,8 +45,8 @@ import {
 } from 'orca'
 import { translate, translateErrorCode, type MessageKey } from './i18n'
 import { asCommentsMode, defaultInstructions, RECENT_COMMENTS, workspaceNameFor, type CommentsMode } from './launch'
-import type { AgentState, LocatedWorkspace } from './orca-workspaces'
-import type { ConnectionStatus } from './protocol'
+import { keyFromHostId, type AgentState, type LocatedWorkspace } from './orca-workspaces'
+import type { ConnectionStatus, TaskAgent, TaskWorkspaceAgents } from './protocol'
 import { textileToMarkdown } from './textile'
 import { ISSUE_BY_WORKSPACE, LINKS_MIGRATED, PROJECT_BY_ORCA_PROJECT, type AssignedIssue } from './links'
 import { taskRefFromWorkspace } from './task-ref'
@@ -118,6 +118,10 @@ const timeEntriesError = atom<string | null>(null)
 const issueLoading = atom(false)
 /** `redmine --version`, null when redmine-cli is not installed, undefined until known. */
 const redmineCli = atom<string | null | undefined>(undefined)
+/** Agents in the workspaces linked to the open task; empty until the worker answers. */
+const taskAgents = atom<TaskWorkspaceAgents[]>([])
+/** Whether this Orca can show an agent's terminal and resume its session, and the user approved. */
+const agentActions = atom<{ show: boolean; resume: boolean }>({ show: false, resume: false })
 
 // Kept across panel runs.
 const search = atom('redmine.search', '', { persist: 'plugin' })
@@ -305,6 +309,30 @@ function agentStatesSoon(): void {
 }
 const AGENT_STATES_DEBOUNCE_MS = 1500
 
+/** The agents in the task's linked workspaces: secondary, so a failure shows none. */
+async function loadTaskAgents(issueId: number): Promise<void> {
+  try {
+    const answer = await plugin.request('redmine.taskAgents', { issueId })
+    if (read(detail)?.id === issueId) set(taskAgents, answer.workspaces)
+  } catch {
+    if (read(detail)?.id === issueId) set(taskAgents, [])
+  }
+}
+
+let taskAgentsTimer: ReturnType<typeof setTimeout> | undefined
+let taskAgentsIssue: number | null = null
+/** Same debounce as `agentStatesSoon`: ask the worker once a burst of agent changes settles. */
+function taskAgentsSoon(issueId: number): void {
+  taskAgentsIssue = issueId
+  if (taskAgentsTimer !== undefined) return
+  taskAgentsTimer = setTimeout(() => {
+    taskAgentsTimer = undefined
+    const id = taskAgentsIssue
+    taskAgentsIssue = null
+    if (id !== null) void loadTaskAgents(id)
+  }, AGENT_STATES_DEBOUNCE_MS)
+}
+
 /** The tiles are secondary: when the count fails, they just stay hidden. */
 async function loadCounts(): Promise<void> {
   try {
@@ -353,9 +381,11 @@ async function openIssue(id: number): Promise<void> {
       set(launchBase, '')
       set(detailTab, 'description')
       set(timeEntries, null)
+      set(taskAgents, [])
     }
     set(detail, issue)
     void loadTimeEntries(id)
+    void loadTaskAgents(id)
   })
 }
 
@@ -512,6 +542,45 @@ function timeFollowup(followup: Followup): Promise<void> {
     set(followupHours, '')
     await completeFollowup(followup)
     set(notice, t('time.done', { hours: value, id: followup.issueId }))
+  })
+}
+
+/** Focuses a listed agent's terminal, so Orca shows its workspace with that pane. */
+function showAgent(terminalId: string): void {
+  void run(async () => {
+    await plugin.request('redmine.showAgent', { terminalId })
+  })
+}
+
+/** A follow-up can resume its agent when it knows the workspace, kind and session, and Orca can. */
+function canResume(followup: Followup): boolean {
+  return (
+    followup.kind === 'agentDone' &&
+    read(agentActions).resume &&
+    Boolean(followup.workspaceId && followup.agent && followup.sessionId)
+  )
+}
+
+/**
+ * Resumes the agent that finished, in its workspace. The follow-up stays, as when it arrived. When
+ * the session already runs in a terminal, the panel says so and shows that terminal.
+ */
+function resumeFollowup(followup: Followup): Promise<void> {
+  return run(async () => {
+    const answer = await plugin.request('redmine.resumeAgent', { followupId: followup.id })
+    if (answer.started) {
+      set(notice, t('followup.resumed'))
+      return
+    }
+    set(notice, t('followup.alreadyRunning'))
+    if (read(agentActions).show) {
+      // Best effort: the notice already said the session is running.
+      try {
+        await plugin.request('redmine.showAgent', { terminalId: answer.terminalId })
+      } catch {
+        // Showing it is a convenience; the notice stands.
+      }
+    }
   })
 }
 
@@ -688,6 +757,26 @@ export function setup(ctx: PanelContext): void {
     ({ available }) => set(launchHereAvailable, available),
     () => set(launchHereAvailable, false)
   )
+  // Which agent actions this Orca offers; the buttons stay hidden until the worker says.
+  void plugin.request('redmine.agentActionsSupport').then(
+    (support) => set(agentActions, support),
+    () => set(agentActions, { show: false, resume: false })
+  )
+  // The detail's agents follow status changes, only for the open task's linked workspaces.
+  ctx.subscriptions.push(
+    on('agent.status.changed', ({ workspaceListId }) => {
+      const id = read(detail)?.id
+      const key = workspaceListId ? keyFromHostId(workspaceListId) : null
+      if (id !== undefined && key && read(issueByWorkspace)[key]?.id === id) taskAgentsSoon(id)
+    })
+  )
+  ctx.subscriptions.push({
+    dispose: () => {
+      if (taskAgentsTimer !== undefined) clearTimeout(taskAgentsTimer)
+      taskAgentsTimer = undefined
+      taskAgentsIssue = null
+    }
+  })
 }
 
 function ConnectForm() {
@@ -902,6 +991,11 @@ function FollowupCard({ followup, open }: { followup: Followup; open: FollowupAc
         <Button size="xs" variant="outline" icon="open-external" onPress={() => openIssue(followup.issueId)}>
           {t('followup.open')}
         </Button>
+        {canResume(followup) ? (
+          <Button size="xs" variant="outline" icon="play" disabled={disabled} onPress={() => resumeFollowup(followup)}>
+            {t('followup.resume')}
+          </Button>
+        ) : null}
         <Button size="xs" variant="outline" icon="edit" disabled={disabled} onPress={() => startFollowupAction(followup, 'comment')}>
           {t('followup.comment')}
         </Button>
@@ -1671,6 +1765,9 @@ function IssueView({ issue }: { issue: IssueDetail }) {
         )
       ) : null}
 
+      {/* Agents in the workspaces linked to this task, with a way to go to one. */}
+      <AgentsSection />
+
       {/* The agent actions: two buttons, each opening its form as a sheet underneath. */}
       <Stack gap="sm">
         <Grid columns={2} gap="sm">
@@ -1836,6 +1933,77 @@ export default function Panel() {
       ) : (
         <IssueList />
       )}
+    </Stack>
+  )
+}
+
+/** How each agent state reads in the detail, and its tone. */
+const AGENT_ROW_LABEL: Record<TaskAgent['state'], MessageKey> = {
+  working: 'agentRow.working',
+  blocked: 'agentRow.blocked',
+  waiting: 'agentRow.waiting',
+  done: 'agentRow.done'
+}
+const AGENT_ROW_TONE: Record<TaskAgent['state'], 'neutral' | 'warning' | 'success'> = {
+  working: 'neutral',
+  blocked: 'warning',
+  waiting: 'neutral',
+  done: 'success'
+}
+
+/** One agent: terminal title, kind, state and time in it, then "Show" when Orca can focus it. */
+function AgentRow({ agent }: { agent: TaskAgent }) {
+  const support = read(agentActions)
+  const terminalId = agent.terminalId
+  return (
+    <Row justify="between" align="center" gap="xs">
+      <Stack gap="none">
+        <Text size="xs" weight="medium" truncate>
+          {agent.title ?? agent.agent ?? t('agents.unknown')}
+        </Text>
+        <Row gap="xs" align="center">
+          {agent.agent ? (
+            <Text size="xs" muted truncate>
+              {agent.agent}
+            </Text>
+          ) : null}
+          <Badge tone={AGENT_ROW_TONE[agent.state]}>{t(AGENT_ROW_LABEL[agent.state])}</Badge>
+          <RelativeTime at={agent.stateStartedAt} format="duration" muted />
+        </Row>
+      </Stack>
+      {support.show && terminalId ? (
+        <Button size="xs" variant="outline" icon="terminal" disabled={read(busy)} onPress={() => showAgent(terminalId)}>
+          {t('agents.show')}
+        </Button>
+      ) : null}
+    </Row>
+  )
+}
+
+/** Agents per workspace linked to the task; hidden while there are none to show. */
+function AgentsSection() {
+  const workspaces = read(taskAgents)
+  if (workspaces.length === 0) return null
+  const total = workspaces.reduce((sum, w) => sum + w.agents.length, 0)
+  return (
+    <Stack gap="sm">
+      <SectionHeader title={t('agents.section')} count={total} />
+      {workspaces.map((workspace) => (
+        <Box key={workspace.key} border radius="md" background="card" padding="sm" direction="column" gap="xs">
+          <Text size="xs" weight="semibold" truncate>
+            {workspace.name}
+          </Text>
+          {workspace.agents.length === 0 ? (
+            <Text muted size="xs">
+              {t('agents.none')}
+            </Text>
+          ) : (
+            workspace.agents.map((agent, index) => (
+              <AgentRow key={agent.terminalId ?? `${workspace.key}-${index}`} agent={agent} />
+            ))
+          )}
+        </Box>
+      ))}
     </Stack>
   )
 }

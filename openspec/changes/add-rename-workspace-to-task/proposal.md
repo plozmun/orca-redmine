@@ -18,5 +18,5 @@ Orca's sidebar shows a workspace by its branch-derived name (`4077-checkout`), w
 
 ## Impact
 
-- `orca-plugin.json`: capability `workspace:write` (one more re-approval; ship in the same release as the other 0.2.0 capabilities), setting `workspaceNameTemplate`.
+- `orca-plugin.json`: capability `workspace:write` (one more re-approval; ships in 0.3.0 with `create-workspace-with-host`, which sets `engines.orca >=1.4.260`), setting `workspaceNameTemplate`.
 - `src/worker.ts` (`redmine.renameWorkspace` request; `orca.host.has('workspace.rename')` gate), `src/protocol.ts`, `src/panel.tsx`, i18n, README.

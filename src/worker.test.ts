@@ -27,6 +27,7 @@ afterEach(() => {
   stopFakeTimers?.()
   stopFakeTimers = null
   main.setOrcaRunner((args) => runOrcaJson(args))
+  main.setRenameOffered(null)
 })
 
 const configured = {
@@ -1487,4 +1488,54 @@ test('without the Orca CLI the item shows my task list instead', async () => {
   assert.ok(worker.logs.some((line) => line.startsWith('openPanel:')))
   await worker.deactivate()
   main.setOrcaRunner((args) => runOrcaJson(args))
+})
+
+// --- Rename the focused workspace after its task (workspace.rename) ---
+
+const renameIssue = { id: 4077, subject: 'Checkout with saved cards', tracker: 'Feature', project: 'Shop' }
+
+function renameHost(settings: Record<string, unknown> = {}, extra: Record<string, unknown> = {}) {
+  return mockHost({
+    ...configured,
+    settings: { ...configured.settings, ...settings },
+    capabilities: ['settings:own', 'secrets:own', 'workspace:write'],
+    results: { 'workspace.rename': ({ name }: { name: string }) => ({ name }), ...extra }
+  })
+}
+
+test('renames the focused workspace after its task, naming it by the link key', async () => {
+  const host = renameHost()
+  const worker = await mountWorker(main, { host })
+  assert.deepEqual(await worker.request('redmine.renameWorkspaceSupport'), { available: true })
+  assert.deepEqual(await worker.request('redmine.renameWorkspace', { workspaceKey: 'wt-1', issue: renameIssue }), {
+    name: '4077 Checkout with saved cards'
+  })
+  assert.deepEqual(host.callsOf('workspace.rename'), [{ workspaceId: 'identity:wt-1', name: '4077 Checkout with saved cards' }])
+  assert.deepEqual(worker.refusals, [])
+  await worker.deactivate()
+})
+
+test('the renamed workspace uses the workspaceNameTemplate setting', async () => {
+  const host = renameHost({ workspaceNameTemplate: '{tracker}: {subject}' })
+  const worker = await mountWorker(main, { host })
+  assert.deepEqual(await worker.request('redmine.renameWorkspace', { workspaceKey: 'wt-2', issue: renameIssue }), {
+    name: '4077 Feature: Checkout with saved cards'
+  })
+  assert.deepEqual(host.callsOf('workspace.rename'), [{ workspaceId: 'identity:wt-2', name: '4077 Feature: Checkout with saved cards' }])
+  await worker.deactivate()
+})
+
+test('rename is offered and attempted only when Orca has workspace.rename', async () => {
+  // An Orca before host API 1.5: the worker is told the method is not there.
+  main.setRenameOffered(false)
+  const host = renameHost()
+  const worker = await mountWorker(main, { host })
+  assert.deepEqual(await worker.request('redmine.renameWorkspaceSupport'), { available: false })
+  await assert.rejects(
+    worker.request('redmine.renameWorkspace', { workspaceKey: 'wt-1', issue: renameIssue }),
+    (e: { code: string }) => e.code === 'workspace_rename_unavailable'
+  )
+  assert.deepEqual(host.callsOf('workspace.rename'), [])
+  main.setRenameOffered(null)
+  await worker.deactivate()
 })

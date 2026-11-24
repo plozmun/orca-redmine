@@ -89,6 +89,19 @@ declare module 'orca' {
       input: { issueId: number; agent: string; instructions: string; locale: string; comments?: CommentsMode }
       output: { terminalId: string; workspaceKey: string | null }
     }
+    /**
+     * Whether this Orca can rename a workspace (`workspace.rename`, host API 1.5); the panel hides
+     * the action when it cannot.
+     */
+    'redmine.renameWorkspaceSupport': { output: { available: boolean } }
+    /**
+     * Renames the focused workspace after its task, filling `workspaceNameTemplate`. Only the panel's
+     * explicit "Rename workspace" action calls it: nothing renames a workspace by itself.
+     */
+    'redmine.renameWorkspace': {
+      input: { workspaceKey: string; issue: Pick<IssueSummary, 'id' | 'subject' | 'tracker' | 'project'> }
+      output: { name: string }
+    }
   }
   interface PluginPanelEvents {
     /** After a status change, comment or time entry: open panels reload the issue. */

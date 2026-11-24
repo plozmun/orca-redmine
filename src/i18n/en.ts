@@ -147,6 +147,7 @@ export const en = {
   'here.done': '{agent} started in this workspace.',
   'here.noWorkspace': 'Open a workspace to launch the agent in it.',
   'here.unsupported': 'This Orca version cannot launch agents in a workspace: update Orca.',
+  'workspace.open': 'Go to workspace',
 
   // What the agent can use besides the prompt
   'agent.cliHint': 'The `redmine` CLI is available to read or update task #{id}. Its number is also in `$REDMINE_ISSUE`.',
@@ -220,6 +221,8 @@ export const en = {
   'errors.invalid_params': 'Orca refused the request: unknown agent or prompt too long',
   'errors.action_failed': 'Orca could not start the agent ({detail})',
   'errors.workspace_rename_unavailable': 'This Orca version cannot rename workspaces: update Orca',
+  'errors.workspace_create': 'Orca could not create the workspace ({detail})',
+  'errors.workspace_create_unavailable': 'This Orca version cannot create workspaces: update Orca',
 
   // Command palette and notifications (worker; the machine's language)
   'notification.agentDone': '#{id} Agent finished: {subject}',

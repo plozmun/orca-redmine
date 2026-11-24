@@ -232,6 +232,9 @@
       "kind": "agent:launch"
     },
     {
+      "kind": "workspace:create"
+    },
+    {
       "kind": "workspace:write"
     }
   ]

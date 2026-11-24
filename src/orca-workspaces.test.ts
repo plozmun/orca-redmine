@@ -1,8 +1,6 @@
 import { assert, test } from 'orca/testing'
 import {
   agentStatesFor,
-  cliProjectIdFor,
-  createWorktreeArgs,
   describeWorktree,
   findWorkspaceId,
   findWorkspaceRow,
@@ -12,7 +10,6 @@ import {
   keyFromHostId,
   matchHostWorkspace,
   matchWorktree,
-  parseCreated,
   projectForKey,
   type HostWorkspaceRow,
   type OrcaListing
@@ -45,28 +42,6 @@ test('duplicate names are told apart by branch; unknown projects use the id tail
 test('without a name match, falls back to a unique branch', () => {
   assert.equal(matchWorktree(listing, { displayName: 'renamed', branch: 'feature/123-login' })?.workspaceKey, 'wt2:local:bbb')
   assert.equal(matchWorktree(listing, { displayName: 'none', branch: 'main' }), null)
-})
-
-test('orca worktree create arguments', () => {
-  assert.deepEqual(
-    createWorktreeArgs({ orcaProjectId: 'git:x/alsa', name: '1-pay', agent: 'claude', prompt: 'P', baseBranch: ' develop ', comment: 'Redmine #1', activate: true }),
-    ['worktree', 'create', '--project', 'git:x/alsa', '--name', '1-pay', '--no-parent', '--agent', 'claude', '--prompt', 'P', '--base-branch', 'develop', '--comment', 'Redmine #1', '--activate']
-  )
-  assert.deepEqual(
-    createWorktreeArgs({ orcaProjectId: 'p', name: 'n', agent: null, prompt: 'P', activate: false }),
-    ['worktree', 'create', '--project', 'p', '--name', 'n', '--no-parent']
-  )
-})
-
-test('reads the created worktree and what was launched', () => {
-  assert.deepEqual(
-    parseCreated({
-      worktree: { id: 'r::/p', identity: { key: 'wt2:local:new' }, displayName: '1-pay', branch: 'refs/heads/pablo/1-pay', path: '/p' },
-      launch: { outcome: { kind: 'terminal', handle: 'h' } }
-    }),
-    { workspaceKey: 'wt2:local:new', displayName: '1-pay', branch: 'pablo/1-pay', path: '/p', launch: 'terminal' }
-  )
-  assert.deepEqual(parseCreated({}), { workspaceKey: null, displayName: null, branch: null, path: null, launch: null })
 })
 
 // `workspace.list` rows as Orca 1.4.255 gives them: id = "identity:" + the CLI's identity.key.
@@ -163,13 +138,6 @@ test('mappings under CLI project ids are copied to the host ids of their reposit
   })
   // Already migrated: nothing to do.
   assert.equal(migrateProjectKeys({ 'repo-kyb': 'kyb' }, hostIds, cli), null)
-})
-
-test('a host project id is turned into the CLI project id for worktree creation', () => {
-  const cli = [{ id: 'git:gitlab.example.com/backend/kyb', sourceRepoIds: ['repo-kyb'] }]
-  assert.equal(cliProjectIdFor('repo-kyb', cli), 'git:gitlab.example.com/backend/kyb')
-  assert.equal(cliProjectIdFor('git:gitlab.example.com/backend/kyb', cli), 'git:gitlab.example.com/backend/kyb')
-  assert.equal(cliProjectIdFor('unknown', cli), 'unknown')
 })
 
 test('agent states: what needs the person wins, and done only until it is seen', () => {

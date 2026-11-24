@@ -174,30 +174,39 @@ test('locates the focused workspace among Orca worktrees', async () => {
 
 test('creates the workspace with the task name and prompt', async () => {
   stubFetch({ '/issues/77.json': { issue: { ...issue, description: 'Integrate payments' } } })
-  const seen: unknown[] = []
-  main.setOrcaCreator(async (options) => {
-    seen.push(options)
-    return { workspaceKey: 'wt-new', displayName: '77-checkout-screen', branch: 'pablo/77-checkout-screen', path: '/p', launch: 'terminal' }
-  })
+  const seen: { projectId?: string; name?: string; baseBranch?: string; agent?: string; prompt?: string; open?: boolean }[] = []
   main.setRedmineCliDetector(async () => null)
-  const worker = await mountWorker(main, { host: mockHost(configured) })
+  const host = mockHost({
+    ...configured,
+    capabilities: ['settings:own', 'secrets:own', 'storage:own', 'workspace:create', 'agent:launch'],
+    results: {
+      'workspace.create': (params: never) => {
+        seen.push(params)
+        return { workspaceId: 'identity:wt-new' }
+      }
+    }
+  })
+  const worker = await mountWorker(main, { host })
   const created = await worker.request('redmine.launchWorkspace', {
     issueId: 77,
-    orcaProjectId: 'git:x/shop',
+    orcaProjectId: 'repo-shop',
     agent: 'claude',
     instructions: 'Do it',
     activate: true,
     locale: 'en'
   })
-  assert.equal(created.workspaceKey, 'wt-new')
-  assert.equal(created.name, '77-checkout-screen')
-  const options = seen[0] as { prompt: string; comment: string; orcaProjectId: string; agent: string }
-  assert.equal(options.orcaProjectId, 'git:x/shop')
-  assert.equal(options.agent, 'claude')
-  assert.equal(options.comment, 'Redmine #77: Checkout screen')
-  assert.ok(options.prompt.startsWith('Do it\n'))
-  assert.ok(options.prompt.includes('Integrate payments'))
-  assert.ok(!options.prompt.includes('CLI'))
+  assert.deepEqual(created, { workspaceKey: 'wt-new', name: '77-checkout-screen' })
+  const params = seen[0]
+  assert.equal(params.projectId, 'repo-shop')
+  assert.equal(params.name, '77-checkout-screen')
+  assert.equal(params.agent, 'claude')
+  assert.equal(params.open, true)
+  assert.equal(params.baseBranch, undefined)
+  assert.ok(params.prompt!.startsWith('Do it\n'))
+  assert.ok(params.prompt!.includes('Integrate payments'))
+  assert.ok(!params.prompt!.includes('CLI'))
+  // Linked before the request answers, from the id the host returned.
+  assert.deepEqual(host.data().storage['links.issueByWorkspace'], { 'wt-new': { id: 77, subject: 'Checkout screen' } })
   await worker.deactivate()
 })
 
@@ -206,11 +215,17 @@ test('launch uses the contextComments and contextMaxChars settings unless the pa
   const journals = Array.from({ length: 7 }, (_, i) => ({ id: i + 1, user: { name: 'Ana' }, notes: `Note ${i + 1}`, created_on: '2026-10-01' }))
   stubFetch({ '/issues/77.json': { issue: { ...issue, journals } } })
   const prompts: string[] = []
-  main.setOrcaCreator(async (options) => {
-    prompts.push(options.prompt)
-    return { workspaceKey: null, displayName: null, branch: null, path: null, launch: null }
+  const host = mockHost({
+    ...configured,
+    capabilities: ['settings:own', 'secrets:own', 'storage:own', 'workspace:create', 'agent:launch'],
+    settings: { ...configured.settings, contextComments: 'all', contextMaxChars: 20000 },
+    results: {
+      'workspace.create': (params: { prompt?: string }) => {
+        prompts.push(params.prompt ?? '')
+        return { workspaceId: 'identity:wt-new' }
+      }
+    }
   })
-  const host = mockHost({ ...configured, settings: { ...configured.settings, contextComments: 'all', contextMaxChars: 20000 } })
   const worker = await mountWorker(main, { host })
   const input = { issueId: 77, orcaProjectId: 'p', agent: 'claude', instructions: 'Go', activate: false, locale: 'en' }
   await worker.request('redmine.launchWorkspace', input)
@@ -219,6 +234,96 @@ test('launch uses the contextComments and contextMaxChars settings unless the pa
   assert.ok(!prompts[1].includes('Note'))
   await worker.deactivate()
 })
+
+test('a workspace created without an agent leaves agent and prompt out, and creation without a key links nothing', async () => {
+  stubFetch({ '/issues/77.json': { issue } })
+  const seen: Record<string, unknown>[] = []
+  const host = mockHost({
+    ...configured,
+    capabilities: ['settings:own', 'secrets:own', 'storage:own', 'workspace:create'],
+    results: {
+      'workspace.create': (params: never) => {
+        seen.push(params)
+        return { workspaceId: 'r::/p/77-checkout-screen' }
+      }
+    }
+  })
+  const worker = await mountWorker(main, { host })
+  assert.deepEqual(
+    await worker.request('redmine.launchWorkspace', { issueId: 77, orcaProjectId: 'repo-shop', agent: null, instructions: '', activate: false, locale: 'en' }),
+    { workspaceKey: null, name: '77-checkout-screen' }
+  )
+  assert.deepEqual(seen[0], { projectId: 'repo-shop', name: '77-checkout-screen', open: false })
+  assert.equal(host.data().storage['links.issueByWorkspace'], undefined)
+  await worker.deactivate()
+})
+
+test('a host refusal is a workspace_create error with the reason as detail', async () => {
+  stubFetch({ '/issues/77.json': { issue } })
+  // No `workspace:create` capability: the host refuses the call.
+  const host = mockHost({ ...configured, capabilities: ['settings:own', 'secrets:own', 'storage:own'] })
+  const worker = await mountWorker(main, { host })
+  await assert.rejects(
+    worker.request('redmine.launchWorkspace', { issueId: 77, orcaProjectId: 'repo-shop', agent: null, instructions: '', activate: false, locale: 'en' }),
+    (e: { code: string; message: string }) => e.code === 'workspace_create' && e.message.includes('workspace:create')
+  )
+  assert.equal(host.data().storage['links.issueByWorkspace'], undefined)
+  assert.ok(worker.logs.some((l) => l.startsWith('launchWorkspace #77:')))
+  await worker.deactivate()
+})
+
+test('an agent that fails after creation still links the workspace and reports the agent error', async () => {
+  stubFetch({ '/issues/77.json': { issue } })
+  const host = mockHost({
+    ...configured,
+    capabilities: ['settings:own', 'secrets:own', 'storage:own', 'workspace:create', 'agent:launch'],
+    results: {
+      'workspace.create': () => {
+        // As Orca reports it: the workspace exists, the agent could not start.
+        throw Object.assign(new Error('workspace identity:wt-new created, but launching claude failed'), { code: 'action_failed' })
+      }
+    }
+  })
+  const worker = await mountWorker(main, { host })
+  await assert.rejects(
+    worker.request('redmine.launchWorkspace', { issueId: 77, orcaProjectId: 'repo-shop', agent: 'claude', instructions: '', activate: false, locale: 'en' }),
+    (e: { code: string }) => e.code === 'action_failed'
+  )
+  assert.deepEqual(host.data().storage['links.issueByWorkspace'], { 'wt-new': { id: 77, subject: 'Checkout screen' } })
+  await worker.deactivate()
+})
+
+test('a prompt over workspace.create’s cap moves the context to a file and points at it', async () => {
+  const { mkdtemp, readFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = await mkdtemp(join(tmpdir(), 'redmine-create-'))
+  main.setContextDir(dir)
+  main.setRedmineCliDetector(async () => null)
+  stubFetch({ '/issues/77.json': { issue: { ...issue, description: 'Detail '.repeat(2000) } } })
+  const prompts: string[] = []
+  const host = mockHost({
+    ...configured,
+    capabilities: ['settings:own', 'secrets:own', 'storage:own', 'workspace:create', 'agent:launch'],
+    results: {
+      'workspace.create': (params: { prompt?: string }) => {
+        prompts.push(params.prompt ?? '')
+        return { workspaceId: 'identity:wt-new' }
+      }
+    }
+  })
+  const worker = await mountWorker(main, { host })
+  await worker.request('redmine.launchWorkspace', { issueId: 77, orcaProjectId: 'repo-shop', agent: 'claude', instructions: 'Do it', activate: false, locale: 'en' })
+  const file = join(dir, '77.md')
+  assert.ok(prompts[0].length <= 4096)
+  assert.ok(prompts[0].startsWith('Do it\n'))
+  assert.ok(prompts[0].includes(`Read its description and comments in ${file} first.`))
+  assert.ok(!prompts[0].includes('--- BEGIN LINKED WORK ITEM CONTEXT ---'))
+  assert.ok((await readFile(file, 'utf8')).includes('--- BEGIN LINKED WORK ITEM CONTEXT ---'))
+  main.setContextDir(undefined)
+  await worker.deactivate()
+})
+
 
 // --- Launch in the focused workspace (agent.launch) ---
 
@@ -355,11 +460,6 @@ test('the API key never reaches logs, errors, prompts, terminals or context file
     throw Object.assign(new Error('spawn orca ENOENT'), { code: 'orca_cli' })
   })
   const prompts: string[] = []
-  main.setOrcaCreator(async (options) => {
-    prompts.push(options.prompt, options.comment ?? '')
-    throw Object.assign(new Error('orca worktree create failed'), { code: 'orca_cli' })
-  })
-
   // Every Redmine answer the client maps to an error, plus a network failure and success.
   let mode: number | 'throw' | 'ok' = 'ok'
   globalThis.fetch = (async (url: string) => {
@@ -378,11 +478,16 @@ test('the API key never reaches logs, errors, prompts, terminals or context file
   const host = mockHost({
     settings: { url: 'https://redmine.test', limit: 50 },
     secrets: { apiKey: KEY },
+    capabilities: ['settings:own', 'secrets:own', 'storage:own', 'workspace:read', 'workspace:create', 'agent:launch', 'terminal:send'],
     results: {
       'terminal.sendText': { accepted: true },
       'workspace.readContext': hostWorkspace,
       'workspace.list': hostRows,
-      'agent.launch': { terminalId: 't9' }
+      'agent.launch': { terminalId: 't9' },
+      'workspace.create': (params: { prompt?: string; name: string }) => {
+        prompts.push(params.prompt ?? '', params.name)
+        throw Object.assign(new Error('workspace create failed'), { code: 'orca_cli' })
+      }
     }
   })
   const worker = await mountWorker(main, { host })
@@ -566,26 +671,41 @@ test('a failed migration is retried at the next locate, and the locate still ans
   await worker.deactivate()
 })
 
-test('the project picker lists the host’s Git projects, and creation gets the CLI project id', async () => {
-  main.setOrcaLister(async () => ({ projects: [{ id: 'git:x/shop', sourceRepoIds: ['repo-shop'] }], worktrees: [] }))
-  const asked: { orcaProjectId: string }[] = []
-  main.setOrcaCreator(async (o) => {
-    asked.push(o)
-    return { workspaceKey: 'wt-9', displayName: 'n', branch: 'b', path: '/n', launch: 'terminal' } as never
+test('the project picker lists the host’s Git projects, and creation gets the host project id', async () => {
+  const asked: { projectId?: string }[] = []
+  let cliRuns = 0
+  main.setOrcaLister(async () => {
+    cliRuns++
+    throw Object.assign(new Error('spawn orca ENOENT'), { code: 'orca_cli' })
   })
   stubFetch({ '/issues/4077.json': { issue: { ...issue, id: 4077 } } })
-  const worker = await mountWorker(main, { host: mockHost({ ...configured, capabilities: ['workspace:read', 'storage:own', 'settings:own', 'secrets:own'], results: { 'project.list': { projects: [
-    { id: 'repo-web', name: 'web', kind: 'git', hostId: 'local', path: '/w' },
-    { id: 'repo-shop', name: 'shop', kind: 'git', hostId: 'local', path: '/s' },
-    { id: 'repo-old', name: 'old', kind: 'git', hostId: 'local', path: '/o', hidden: true },
-    { id: 'folder-docs', name: 'docs', kind: 'folder', hostId: 'local', path: '/d' }
-  ], truncated: false } } }) })
+  const host = mockHost({
+    ...configured,
+    capabilities: ['workspace:read', 'storage:own', 'settings:own', 'secrets:own', 'workspace:create'],
+    results: {
+      'project.list': {
+        projects: [
+          { id: 'repo-web', name: 'web', kind: 'git', hostId: 'local', path: '/w' },
+          { id: 'repo-shop', name: 'shop', kind: 'git', hostId: 'local', path: '/s' },
+          { id: 'repo-old', name: 'old', kind: 'git', hostId: 'local', path: '/o', hidden: true },
+          { id: 'folder-docs', name: 'docs', kind: 'folder', hostId: 'local', path: '/d' }
+        ],
+        truncated: false
+      },
+      'workspace.create': (params: { projectId: string }) => {
+        asked.push(params)
+        return { workspaceId: 'identity:wt-9' }
+      }
+    }
+  })
+  const worker = await mountWorker(main, { host })
   assert.deepEqual(await worker.request('redmine.orcaProjects'), [
     { id: 'repo-shop', name: 'shop' },
     { id: 'repo-web', name: 'web' }
   ])
   await worker.request('redmine.launchWorkspace', { issueId: 4077, orcaProjectId: 'repo-shop', agent: null, instructions: '', activate: false, locale: 'en' })
-  assert.equal(asked[0].orcaProjectId, 'git:x/shop')
+  assert.equal(asked[0].projectId, 'repo-shop')
+  assert.equal(cliRuns, 0, 'the picker and the create never run the CLI')
   await worker.deactivate()
 })
 
@@ -1760,5 +1880,64 @@ test('resume fails with agent_resume for a host error or a follow-up without a s
   )
   // The follow-up stays after a failure too.
   assert.deepEqual((await worker.request('redmine.followups.get')).followups, [resumable])
+  await worker.deactivate()
+})
+
+// --- Go to the task's workspace (`workspace.open`) ---
+
+test('open workspace support needs workspace.open and the workspace:write capability', async () => {
+  let worker = await mountWorker(main, { host: mockHost({ ...configured, capabilities: [] }) })
+  assert.deepEqual(await worker.request('redmine.openWorkspaceSupport'), { available: false })
+  await worker.deactivate()
+
+  worker = await mountWorker(main, { host: mockHost({ ...configured, capabilities: ['workspace:write'] }) })
+  assert.deepEqual(await worker.request('redmine.openWorkspaceSupport'), { available: true })
+  await worker.deactivate()
+})
+
+test('go to workspace shows the workspace linked to the task', async () => {
+  const host = mockHost({
+    ...configured,
+    capabilities: ['workspace:write', 'storage:own'],
+    storage: { 'links.issueByWorkspace': { 'wt-other': { id: 4081, subject: 'Pass' }, 'wt-4077': { id: 4077, subject: 'Pay' } } },
+    results: { 'workspace.open': { opened: true } }
+  })
+  const worker = await mountWorker(main, { host })
+  assert.deepEqual(await worker.request('redmine.openWorkspace', { issueId: 4077 }), { opened: true })
+  assert.deepEqual(host.callsOf('workspace.open'), [{ workspaceId: 'identity:wt-4077' }])
+  await worker.deactivate()
+})
+
+test('go to workspace says why it cannot, with codes', async () => {
+  // Without the capability nothing is shown, and the host is never asked.
+  let host = mockHost({
+    ...configured,
+    capabilities: ['storage:own'],
+    storage: { 'links.issueByWorkspace': { 'wt-4077': { id: 4077, subject: 'Pay' } } }
+  })
+  let worker = await mountWorker(main, { host })
+  await assert.rejects(worker.request('redmine.openWorkspace', { issueId: 4077 }), (e: { code: string }) => e.code === 'unknown_method')
+  assert.deepEqual(host.callsOf('workspace.open'), [])
+  await worker.deactivate()
+
+  // No workspace linked to the task.
+  host = mockHost({ ...configured, capabilities: ['workspace:write', 'storage:own'], storage: { 'links.issueByWorkspace': {} } })
+  worker = await mountWorker(main, { host })
+  await assert.rejects(worker.request('redmine.openWorkspace', { issueId: 4077 }), (e: { code: string }) => e.code === 'workspace_not_listed')
+  await worker.deactivate()
+
+  // A host refusal keeps its code, for the panel to translate.
+  host = mockHost({
+    ...configured,
+    capabilities: ['workspace:write', 'storage:own'],
+    storage: { 'links.issueByWorkspace': { 'wt-4077': { id: 4077, subject: 'Pay' } } },
+    results: {
+      'workspace.open': () => {
+        throw Object.assign(new Error('no such workspace'), { code: 'action_failed' })
+      }
+    }
+  })
+  worker = await mountWorker(main, { host })
+  await assert.rejects(worker.request('redmine.openWorkspace', { issueId: 4077 }), (e: { code: string }) => e.code === 'action_failed')
   await worker.deactivate()
 })

@@ -137,6 +137,7 @@ export const es: Messages = {
   'here.done': '{agent} iniciado en este workspace.',
   'here.noWorkspace': 'Abre un workspace para lanzar el agente en él.',
   'here.unsupported': 'Esta versión de Orca no puede lanzar agentes en un workspace: actualiza Orca.',
+  'workspace.open': 'Ir al workspace',
 
   'agent.cliHint': 'Tienes el CLI `redmine` para leer o actualizar la tarea #{id}. Su número también está en `$REDMINE_ISSUE`.',
   'agentState.working': 'Agente trabajando',
@@ -206,6 +207,8 @@ export const es: Messages = {
   'errors.invalid_params': 'Orca rechazó la petición: agente desconocido o prompt demasiado largo',
   'errors.action_failed': 'Orca no pudo iniciar el agente ({detail})',
   'errors.workspace_rename_unavailable': 'Esta versión de Orca no puede renombrar workspaces: actualiza Orca',
+  'errors.workspace_create': 'Orca no pudo crear el workspace ({detail})',
+  'errors.workspace_create_unavailable': 'Esta versión de Orca no puede crear workspaces: actualiza Orca',
 
   'notification.agentDone': '#{id} El agente ha terminado: {subject}',
   'notification.agentBlocked': 'El agente de #{id} necesita tu respuesta: {subject}',

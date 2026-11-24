@@ -9,8 +9,6 @@ import { asCommentsMode, buildContextBlock, buildLaunchPrompt, CONTEXT_MAX_CHARS
 import {
   agentStatesFor,
   clearOrcaCache,
-  cliProjectIdFor,
-  createWorktree,
   describeWorktree,
   findWorkspaceId,
   findWorkspaceRow,
@@ -23,8 +21,6 @@ import {
   unknownProjectKeys,
   runOrcaJson,
   shortBranch,
-  type CreatedWorktree,
-  type CreateWorktreeOptions,
   type FocusedContext,
   type HostProjectRow,
   type HostWorkspaceRow,
@@ -54,17 +50,11 @@ import {
 import { pickPluginKey, type ListedPlugin } from './plugin-key'
 
 let orcaLister: () => Promise<OrcaListing> = listOrca
-let orcaCreator: (o: CreateWorktreeOptions) => Promise<CreatedWorktree> = createWorktree
 let orcaRunner: (args: string[]) => Promise<unknown> = (args) => runOrcaJson(args)
 
 /** Tests: replaces the Orca CLI listing. */
 export function setOrcaLister(lister: () => Promise<OrcaListing>): void {
   orcaLister = lister
-}
-
-/** Tests: replaces `orca worktree create`. */
-export function setOrcaCreator(creator: (o: CreateWorktreeOptions) => Promise<CreatedWorktree>): void {
-  orcaCreator = creator
 }
 
 /** Tests: replaces the `orca` CLI runner (panel opening). */
@@ -298,21 +288,8 @@ async function projectWithCli(key: string) {
 }
 
 /**
- * The project id `orca worktree create` takes for one the picker offered. With `project.list` the
- * picker holds host repository ids, which the CLI names by their logical project; if the CLI listing
- * fails, the id is passed as is and the create reports the problem.
+ * The host's project ids (repository ids): `project.list`, else the projects `workspace.list` names.
  */
-async function creatableProjectId(orca: OrcaWorkerApi, id: string): Promise<string> {
-  if (!orca.host.has('project.list')) return id
-  try {
-    return cliProjectIdFor(id, (await orcaLister()).projects)
-  } catch (error) {
-    orca.log(`launchWorkspace (project id): ${errorParts(error).errorDetail}`)
-    return id
-  }
-}
-
-/** The host's project ids (repository ids): `project.list`, else the projects `workspace.list` names. */
 async function hostProjectIds(orca: OrcaWorkerApi): Promise<Set<string>> {
   if (orca.host.has('project.list')) {
     const { projects } = (await orca.host.call('project.list', {})) as { projects: HostProjectRow[] }
@@ -689,6 +666,38 @@ async function notifyAgent(orca: OrcaWorkerApi, transition: AgentTransition['tra
   }
 }
 
+// --- Creating with the host (`workspace.create`) and showing a workspace (`workspace.open`) ---
+
+/**
+ * Links a workspace key to the task. Reads the store again right before writing: the panel may have
+ * linked the workspace meanwhile (a launch answers after the workspace exists).
+ */
+async function linkWorkspace(orca: OrcaWorkerApi, key: string, issue: Pick<IssueDetail, 'id' | 'subject'>): Promise<void> {
+  const links = await readMap<AssignedIssue>(orca, ISSUE_BY_WORKSPACE)
+  await orca.storage.set(ISSUE_BY_WORKSPACE, { ...links, [key]: { id: issue.id, subject: issue.subject } })
+}
+
+/**
+ * The `identity:<key>` workspace id an error names: `workspace.create` reports that form when the
+ * workspace exists but the agent failed to start. Null for any other error.
+ */
+function workspaceIdInError(error: unknown): string | null {
+  const text = error instanceof Error ? error.message : String(error)
+  const match = text.match(/identity:[^\s"'`,;)]+/)
+  return match ? match[0].replace(/[.,:;]+$/, '') : null
+}
+
+/** Whether this Orca offers `workspace.open` and the person approved `workspace:write`. */
+function canOpenWorkspace(orca: OrcaWorkerApi): boolean {
+  return orca.host.has('workspace.open') && orca.grantedCapabilities.includes('workspace:write')
+}
+
+/** A workspace key linked to the task (any of them), or null. */
+async function linkedKeyForTask(orca: OrcaWorkerApi, issueId: number): Promise<string | null> {
+  const links = await readMap<AssignedIssue>(orca, ISSUE_BY_WORKSPACE)
+  return Object.keys(links).find((key) => links[key]?.id === issueId) ?? null
+}
+
 export default function activate(orca: OrcaWorkerApi): void {
   /** Workspaces whose work start was already recorded in this run (the event may repeat). */
   const started = new Set<string>()
@@ -1009,15 +1018,14 @@ export default function activate(orca: OrcaWorkerApi): void {
 
   orca.panels.handle('redmine.cli', async () => ({ version: await redmineCli() }))
 
-  // Git projects a worktree can be created in: from the host when it lists them (same ids as the
-  // located workspace's project), else from the CLI.
+  // Git projects a workspace can be created in: the host's projects (same ids as `workspace.create`
+  // takes). No CLI: `project.list` is host API 1.7, which every Orca this plugin runs on has.
   orca.panels.handle('redmine.orcaProjects', async () => {
-    const rows = orca.host.has('project.list')
-      ? ((await orca.host.call('project.list', {})) as { projects: HostProjectRow[] }).projects
-          .filter((p) => p.kind === 'git' && !p.hidden)
-          .map((p) => ({ id: p.id, name: p.name || p.id }))
-      : (await orcaLister()).projects.map((p) => ({ id: p.id, name: p.displayName ?? p.id }))
-    return rows.sort((a, b) => a.name.localeCompare(b.name))
+    const { projects } = (await orca.host.call('project.list', {})) as { projects: HostProjectRow[] }
+    return projects
+      .filter((p) => p.kind === 'git' && !p.hidden)
+      .map((p) => ({ id: p.id, name: p.name || p.id }))
+      .sort((a, b) => a.name.localeCompare(b.name))
   })
 
   // Which linked tasks have an agent working, waiting for permission, or done and unseen. Empty when
@@ -1034,24 +1042,56 @@ export default function activate(orca: OrcaWorkerApi): void {
   })
 
   orca.panels.handle('redmine.launchWorkspace', async (input) => {
+    if (!orca.host.has('workspace.create')) throw new RedmineError('workspace_create_unavailable', 'workspace.create')
     const issue = await (await client(orca)).getIssue(input.issueId)
     const name = workspaceNameFor(issue)
+    // Same text and cap as "Launch agent here": `workspace.create` hands the prompt to the agent,
+    // which refuses more than 4,096 characters, so a long one moves the context to a file.
     const options = await contextOptions(orca)
-    const created = await orcaCreator({
-      orcaProjectId: await creatableProjectId(orca, input.orcaProjectId),
+    const comments = input.comments ?? options.comments
+    const redmineCliInstalled = Boolean(await redmineCli())
+    const full = buildLaunchPrompt(issue, input.instructions, input.locale, { ...options, comments, redmineCli: redmineCliInstalled })
+    let prompt = full
+    if (input.agent && !fitsLaunchPrompt(full)) {
+      const contextFile = await writeContextFile(issue.id, buildContextBlock(issue, { ...options, comments }), contextDir)
+      prompt = contextFilePrompt(issue, input.instructions, input.locale, { contextFile, redmineCli: redmineCliInstalled })
+      orca.log(`launchWorkspace #${issue.id}: prompt too long, context in ${contextFile}`)
+    }
+    const params: { projectId: string; name: string; baseBranch?: string; agent?: string; prompt?: string; open?: boolean } = {
+      projectId: input.orcaProjectId,
       name,
-      agent: input.agent,
-      prompt: buildLaunchPrompt(issue, input.instructions, input.locale, {
-        ...options,
-        comments: input.comments ?? options.comments,
-        redmineCli: Boolean(await redmineCli())
-      }),
-      baseBranch: input.baseBranch,
-      comment: `Redmine #${issue.id}: ${issue.subject}`,
-      activate: input.activate
-    })
-    orca.log(`launchWorkspace #${issue.id} -> ${created.workspaceKey ?? '?'} (${created.branch ?? '?'})`)
-    return { ...created, name }
+      open: input.activate
+    }
+    if (input.baseBranch?.trim()) params.baseBranch = input.baseBranch.trim()
+    if (input.agent) {
+      params.agent = input.agent
+      params.prompt = prompt
+    }
+    let workspaceId: string
+    try {
+      workspaceId = ((await orca.host.call('workspace.create', params)) as { workspaceId: string }).workspaceId
+    } catch (error) {
+      const parts = errorParts(error)
+      // The workspace exists and the agent failed to start: link it anyway and report the agent error.
+      const createdKey = keyFromHostId(workspaceIdInError(error) ?? '')
+      if (createdKey) {
+        try {
+          await linkWorkspace(orca, createdKey, issue)
+        } catch (linkError) {
+          orca.log(`launchWorkspace #${issue.id} (link): ${errorParts(linkError).errorDetail}`)
+        }
+        orca.log(`launchWorkspace #${issue.id} -> ${createdKey}, agent failed: ${parts.errorDetail}`)
+        throw new RedmineError(parts.errorCode === 'unknown' ? 'action_failed' : parts.errorCode, parts.errorDetail)
+      }
+      orca.log(`launchWorkspace #${issue.id}: ${parts.errorDetail}`)
+      throw new RedmineError('workspace_create', parts.errorDetail)
+    }
+    // Linked before answering, so the panel and `workspace.created` agree (that handler skips a
+    // workspace already linked to the task).
+    const workspaceKey = keyFromHostId(workspaceId)
+    if (workspaceKey) await linkWorkspace(orca, workspaceKey, issue)
+    orca.log(`launchWorkspace #${issue.id} -> ${workspaceKey ?? workspaceId}`)
+    return { workspaceKey, name }
   })
 
   orca.panels.handle('redmine.sendToAgent', async ({ id, terminalId, locale }) => {
@@ -1165,6 +1205,18 @@ export default function activate(orca: OrcaWorkerApi): void {
     } catch (error) {
       throw new RedmineError('agent_resume', errorParts(error).errorDetail)
     }
+  })
+
+  orca.panels.handle('redmine.openWorkspaceSupport', async () => ({ available: canOpenWorkspace(orca) }))
+
+  // "Go to workspace": shows the workspace linked to the task, as clicking it in Orca's sidebar does.
+  orca.panels.handle('redmine.openWorkspace', async ({ issueId }) => {
+    if (!canOpenWorkspace(orca)) throw new RedmineError('unknown_method', 'workspace.open')
+    const key = await linkedKeyForTask(orca, issueId)
+    if (!key) throw new RedmineError('workspace_not_listed', `no workspace linked to #${issueId}`)
+    const answer = (await orca.host.call('workspace.open', { workspaceId: `identity:${key}` })) as { opened: boolean }
+    orca.log(`openWorkspace #${issueId} -> ${key}`)
+    return { opened: answer.opened }
   })
 
   // Command palette. No panel asked, so it answers in the machine's language.

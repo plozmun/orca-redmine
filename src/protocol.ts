@@ -3,7 +3,7 @@
 // panel translates them with src/i18n; `*Detail` fields carry untranslated detail.
 import type { CommentsMode } from './launch'
 import type { Followup } from './followups'
-import type { AgentState, CreatedWorktree, LocatedWorkspace } from './orca-workspaces'
+import type { AgentState, LocatedWorkspace } from './orca-workspaces'
 import type { IssueDetail, IssueStatus, IssueSummary, OpenCounts, Project, TimeEntry } from './redmine'
 
 export interface ConnectionStatus {
@@ -66,7 +66,7 @@ declare module 'orca' {
         /** Which comments go into the context; defaults to the `contextComments` setting. */
         comments?: CommentsMode
       }
-      output: CreatedWorktree & { name: string }
+      output: { workspaceKey: string | null; name: string }
     }
     /** Whether the `redmine` CLI (redmine-cli) is installed: `redmine --version`, or null. */
     'redmine.cli': { output: { version: string | null } }
@@ -110,6 +110,10 @@ declare module 'orca' {
     'redmine.showAgent': { input: { terminalId: string }; output: { focused: boolean } }
     /** Resumes the session of an "agent finished" follow-up; `started` is false when it already runs. */
     'redmine.resumeAgent': { input: { followupId: string }; output: { terminalId: string; started: boolean } }
+    /** Whether this Orca can show a workspace (`workspace.open`) with the capability granted; the panel hides the action when it cannot. */
+    'redmine.openWorkspaceSupport': { output: { available: boolean } }
+    /** Shows the workspace linked to the task in Orca (its `identity:<key>`). */
+    'redmine.openWorkspace': { input: { issueId: number }; output: { opened: boolean } }
   }
   interface PluginPanelEvents {
     /** After a status change, comment or time entry: open panels reload the issue. */

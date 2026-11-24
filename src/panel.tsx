@@ -188,6 +188,8 @@ const agentSheet = atom<AgentSheet | null>('redmine.agentSheet', null, { persist
 type LaunchWhere = 'new' | 'here'
 /** Where "Launch agent" starts the agent: in a new workspace or the focused one. */
 const launchWhere = atom<LaunchWhere>('redmine.launchWhere', 'new', { persist: 'plugin' })
+/** Whether this Orca can show a workspace (`workspace.open`, `workspace:write` approved); null until the worker says. */
+const openWorkspaceAvailable = atom<boolean | null>(null)
 
 // Plugin settings (Settings → Plugins → Redmine), read once and kept current.
 const instructionsTemplate = atom<string | null>(null)
@@ -619,12 +621,12 @@ function launchWorkspace(issue: IssueDetail): Promise<void> {
       },
       { timeoutMs: 120_000 }
     )
+    // The worker already linked the workspace before answering: keep the panel's copy in step.
     if (created.workspaceKey) {
       const key = created.workspaceKey
       update(issueByWorkspace, (map) => ({ ...map, [key]: { id: issue.id, subject: issue.subject } }))
     }
-    const name = created.displayName ?? created.name
-    const parts = [created.branch ? t('launch.doneBranch', { name, branch: created.branch }) : t('launch.done', { name })]
+    const parts = [t('launch.done', { name: created.name })]
     if (agent) parts.push(t('launch.doneAgent', { agent: AGENTS.find((a) => a.value === agent)?.label ?? agent }))
     if (created.workspaceKey) parts.push(t('launch.assigned'))
     set(notice, parts.join(' '))
@@ -675,6 +677,20 @@ function renameWorkspace(issue: IssueDetail): Promise<void> {
     const fields = { id: issue.id, subject: issue.subject, tracker: issue.tracker, project: issue.project }
     const answer = await plugin.request('redmine.renameWorkspace', { workspaceKey: key, issue: fields })
     set(notice, t('rename.done', { name: answer.name }))
+  })
+}
+
+/** The key of a workspace other than the focused one that has the task, or null. */
+function otherWorkspaceKey(issueId: number): string | null {
+  const focused = read(located)?.workspaceKey
+  const found = Object.entries(read(issueByWorkspace)).find(([key, issue]) => issue.id === issueId && key !== focused)
+  return found ? found[0] : null
+}
+
+/** Shows the workspace linked to the task, as clicking it in Orca's sidebar does. */
+function openWorkspace(issueId: number): Promise<void> {
+  return run(async () => {
+    await plugin.request('redmine.openWorkspace', { issueId })
   })
 }
 
@@ -798,6 +814,11 @@ export function setup(ctx: PanelContext): void {
       taskAgentsIssue = null
     }
   })
+  // Same for `workspace.open` (a worker method): the worker checks the method and `workspace:write`.
+  void plugin.request('redmine.openWorkspaceSupport').then(
+    ({ available }) => set(openWorkspaceAvailable, available),
+    () => set(openWorkspaceAvailable, false)
+  )
 }
 
 function ConnectForm() {
@@ -1015,6 +1036,11 @@ function FollowupCard({ followup, open }: { followup: Followup; open: FollowupAc
         {canResume(followup) ? (
           <Button size="xs" variant="outline" icon="play" disabled={disabled} onPress={() => resumeFollowup(followup)}>
             {t('followup.resume')}
+          </Button>
+        ) : null}
+        {!removed && read(openWorkspaceAvailable) === true && otherWorkspaceKey(followup.issueId) ? (
+          <Button size="xs" variant="outline" icon="folder" disabled={disabled} onPress={() => openWorkspace(followup.issueId)}>
+            {t('workspace.open')}
           </Button>
         ) : null}
         <Button size="xs" variant="outline" icon="edit" disabled={disabled} onPress={() => startFollowupAction(followup, 'comment')}>
@@ -1795,6 +1821,11 @@ function IssueView({ issue }: { issue: IssueDetail }) {
 
       {/* Agents in the workspaces linked to this task, with a way to go to one. */}
       <AgentsSection />
+      {read(openWorkspaceAvailable) === true && otherWorkspaceKey(issue.id) ? (
+        <Button size="sm" variant="outline" icon="folder" disabled={disabled} onPress={() => openWorkspace(issue.id)}>
+          {t('workspace.open')}
+        </Button>
+      ) : null}
 
       {/* The agent actions: two buttons, each opening its form as a sheet underneath. */}
       <Stack gap="sm">

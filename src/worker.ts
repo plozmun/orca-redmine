@@ -35,7 +35,7 @@ import { contextFilePrompt, fitsLaunchPrompt } from './launch-here'
 import type { ConnectionStatus } from './protocol'
 import { isBookableDay } from './days'
 import { normalizeBaseUrl, projectSubtree, RedmineClient, RedmineError, type IssueDetail, type OpenCounts } from './redmine'
-import { branchFromTemplate, taskRefFromWorkspace } from './task-ref'
+import { branchFromTemplate, taskRefFromWorkspace, workspaceNameFor as workspaceNameFromTask } from './task-ref'
 import { ISSUE_BY_WORKSPACE, PROJECT_BY_ORCA_PROJECT, PROJECT_KEYS_MIGRATED, WORKSPACE_IDS_BY_KEY, type AssignedIssue } from './links'
 import {
   addFollowup,
@@ -84,6 +84,17 @@ export function setContextDir(dir: string | undefined): void {
   contextDir = dir
 }
 
+/** Tests: pretends this Orca offers `workspace.rename` or not, as an older host would not. */
+let renameOffered: boolean | null = null
+export function setRenameOffered(offered: boolean | null): void {
+  renameOffered = offered
+}
+
+/** Whether this Orca can rename a workspace (`workspace.rename`, host API 1.5). */
+function hasRename(orca: OrcaWorkerApi): boolean {
+  return renameOffered ?? orca.host.has('workspace.rename')
+}
+
 const URL_SETTING = 'url'
 const LIMIT_SETTING = 'limit'
 const API_KEY = 'apiKey'
@@ -91,6 +102,7 @@ const SEND_PROMPT_SETTING = 'sendPrompt'
 const COMMENTS_SETTING = 'contextComments'
 const MAX_CHARS_SETTING = 'contextMaxChars'
 const BRANCH_TEMPLATE_SETTING = 'branchTemplate'
+const WORKSPACE_NAME_SETTING = 'workspaceNameTemplate'
 const ON_CREATED_SETTING = 'onWorkspaceCreated'
 const PROMPT_POINTER_SETTING = 'promptPointer'
 const AGENT_NOTIFICATION_SETTING = 'agentNotification'
@@ -953,6 +965,19 @@ export default function activate(orca: OrcaWorkerApi): void {
     const launched = await orca.host.call('agent.launch', { workspaceId, agent: input.agent, prompt })
     orca.log(`launchHere #${issue.id} -> ${workspaceId} (${input.agent})`)
     return { terminalId: launched.terminalId, workspaceKey: keyFromHostId(workspaceId) }
+  })
+
+  orca.panels.handle('redmine.renameWorkspaceSupport', async () => ({ available: hasRename(orca) }))
+
+  // The person's explicit action only: the name comes from the task, and nothing is renamed on its own.
+  orca.panels.handle('redmine.renameWorkspace', async ({ workspaceKey, issue }) => {
+    if (!hasRename(orca)) throw new RedmineError('workspace_rename_unavailable', 'workspace.rename')
+    const template = await stringSetting(orca, WORKSPACE_NAME_SETTING)
+    const name = workspaceNameFromTask(template ?? '', issue)
+    // The link key is what `workspace.rename` calls `identity:<key>`.
+    const renamed = await orca.host.call('workspace.rename', { workspaceId: `identity:${workspaceKey}`, name })
+    orca.log(`renameWorkspace ${workspaceKey}: ${renamed.name}`)
+    return { name: renamed.name }
   })
 
   // Command palette. No panel asked, so it answers in the machine's language.

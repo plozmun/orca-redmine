@@ -1,5 +1,5 @@
 import { assert, test } from 'orca/testing'
-import { branchFromTemplate, taskRef, taskRefFromWorkspace } from './task-ref'
+import { branchFromTemplate, taskRef, taskRefFromWorkspace, workspaceNameFor } from './task-ref'
 
 test('task numbers in names and branches', () => {
   assert.equal(taskRef('feature/12345-login'), 12345)
@@ -38,4 +38,36 @@ test('branch templates', () => {
   assert.equal(branchFromTemplate('{unknown}//{id}..x.lock', issue), '4077.x')
   assert.equal(branchFromTemplate('{unknown}', issue), null)
   assert.equal(branchFromTemplate('  ', issue), null)
+})
+
+test('workspace names from a task', () => {
+  // The default, and an empty or blank template.
+  assert.equal(workspaceNameFor('', issue), '4077 Checkout with saved cards')
+  assert.equal(workspaceNameFor('   ', issue), '4077 Checkout with saved cards')
+  // Every placeholder, case-insensitive.
+  assert.equal(workspaceNameFor('{ID} · {SUBJECT}', issue), '4077 · Checkout with saved cards')
+  assert.equal(workspaceNameFor('{tracker}: {subject}', issue), '4077 Feature: Checkout with saved cards')
+  assert.equal(workspaceNameFor('{project}: {subject}', issue), '4077 Shop › iOS App: Checkout with saved cards')
+  // A template with no number still starts with the task number; unknown placeholders are dropped.
+  assert.equal(workspaceNameFor('{tracker} {subject}', issue), '4077 Feature Checkout with saved cards')
+  assert.equal(workspaceNameFor('{unknown}', issue), '4077')
+  // Already numbered: no second number.
+  assert.equal(workspaceNameFor('{id} {subject}', issue), '4077 Checkout with saved cards')
+  assert.equal(workspaceNameFor('{id}-{subject}', issue), '4077-Checkout with saved cards')
+})
+
+test('workspace names collapse whitespace and drop control and hidden characters', () => {
+  assert.equal(workspaceNameFor('{subject}', { ...issue, subject: 'Checkout\n\twith   saved\r\ncards' }), '4077 Checkout with saved cards')
+  assert.equal(workspaceNameFor('{subject}', { ...issue, subject: 'Check\u0000out\u200b \u202escreen' }), '4077 Checkout screen')
+  assert.equal(workspaceNameFor('{subject}', { ...issue, subject: '  ' }), '4077')
+})
+
+test('workspace names are cut to 200 characters, keeping the number first', () => {
+  const name = workspaceNameFor('{subject}', { ...issue, subject: 'A'.repeat(500) })
+  assert.equal(name.length, 200)
+  assert.ok(name.startsWith('4077 '))
+  // A long template without the number is cut after the number is added.
+  const long = workspaceNameFor('{tracker} {subject}', { ...issue, subject: 'B'.repeat(500) })
+  assert.equal(long.length, 200)
+  assert.ok(long.startsWith('4077 Feature '))
 })

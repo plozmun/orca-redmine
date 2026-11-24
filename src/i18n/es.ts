@@ -102,6 +102,8 @@ export const es: Messages = {
   'issue.description': 'Descripción',
   'issue.noDescription': 'Sin descripción',
   'issue.noComments': 'Sin comentarios',
+  'issue.renameWorkspace': 'Renombrar workspace',
+  'rename.done': 'Workspace renombrado a «{name}»',
 
   'launch.title': 'Lanzar agente en un workspace nuevo',
   'launch.subtitle': 'Crea un worktree para la tarea, como Orca hace con Jira o GitHub',
@@ -203,6 +205,7 @@ export const es: Messages = {
   'errors.unknown_method': 'Esta versión de Orca no ofrece esa acción',
   'errors.invalid_params': 'Orca rechazó la petición: agente desconocido o prompt demasiado largo',
   'errors.action_failed': 'Orca no pudo iniciar el agente ({detail})',
+  'errors.workspace_rename_unavailable': 'Esta versión de Orca no puede renombrar workspaces: actualiza Orca',
 
   'notification.agentDone': '#{id} El agente ha terminado: {subject}',
   'notification.agentBlocked': 'El agente de #{id} necesita tu respuesta: {subject}',

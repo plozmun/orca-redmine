@@ -110,6 +110,8 @@ export const en = {
   'issue.description': 'Description',
   'issue.noDescription': 'No description',
   'issue.noComments': 'No comments',
+  'issue.renameWorkspace': 'Rename workspace',
+  'rename.done': 'Workspace renamed to “{name}”',
 
   // Launch in a new workspace
   'launch.title': 'Launch agent in a new workspace',
@@ -217,6 +219,7 @@ export const en = {
   'errors.unknown_method': 'This Orca version does not offer that action',
   'errors.invalid_params': 'Orca refused the request: unknown agent or prompt too long',
   'errors.action_failed': 'Orca could not start the agent ({detail})',
+  'errors.workspace_rename_unavailable': 'This Orca version cannot rename workspaces: update Orca',
 
   // Command palette and notifications (worker; the machine's language)
   'notification.agentDone': '#{id} Agent finished: {subject}',

@@ -33,7 +33,7 @@ const detail = {
 }
 
 const sample = {
-  capabilities: ['workspace:read', 'settings:own', 'secrets:own', 'terminal:send', 'storage:own', 'agent:launch'],
+  capabilities: ['workspace:read', 'settings:own', 'secrets:own', 'terminal:send', 'storage:own', 'agent:launch', 'workspace:write'],
   requests: {
     'redmine.status': () => ({ configured: true, url: 'https://redmine.example.com', user: { login: 'ana', name: 'Ana García' } }),
     'redmine.issues': () => ({ issues, total: 12 }),
@@ -131,5 +131,19 @@ export default defineCheck({
     ...sample,
     settings: { url: 'http://127.0.0.1:9', statusBar: true, statusBarMinutes: 5 },
     secrets: { apiKey: 'x' }
+  },
+  // The task linked to the focused workspace, with "Rename workspace" offered (host API 1.5).
+  rename: {
+    ...sample,
+    requests: {
+      ...sample.requests,
+      'redmine.renameWorkspaceSupport': () => ({ available: true })
+    },
+    persisted: {
+      plugin: {
+        'redmine.projectByOrcaProject': { 'git:shop': 'shop' },
+        'redmine.issueByWorkspace': { 'wt-1': { id: 4077, subject: 'Checkout screen with saved cards' } }
+      }
+    }
   }
 })

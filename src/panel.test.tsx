@@ -856,3 +856,47 @@ test('a task whose linked workspace has an agent at work shows it, and changes a
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
+
+test('renames the focused workspace after the task, only from its button and only when linked', async () => {
+  const asked: unknown[] = []
+  const view = await mount(panel, {
+    host: connectedHost([], {
+      'redmine.renameWorkspaceSupport': () => ({ available: true }),
+      'redmine.renameWorkspace': ((input: unknown) => {
+        asked.push({ rename: input })
+        return { name: '4077 Checkout screen' }
+      }) as never
+    }),
+    locale: 'en'
+  })
+  await view.emit('workspace.changed', ws('shop-a'))
+  await view.press({ type: 'ListItem' })
+  // The focused workspace is not linked to this task yet: no action.
+  assert.equal(view.find({ text: 'Rename workspace' }), null)
+  // Nothing was renamed without a click.
+  assert.deepEqual(asked, [])
+
+  await view.press({ text: 'Assign to this workspace' })
+  await view.press({ text: 'Rename workspace' })
+  assert.deepEqual(asked, [
+    { rename: { workspaceKey: 'wt-a', issue: { id: 4077, subject: 'Checkout screen', tracker: 'Feature', project: 'Shop' } } }
+  ])
+  assert.ok(view.find({ text: 'Workspace renamed to “4077 Checkout screen”' }))
+  assert.deepEqual(view.errors, [])
+  assert.deepEqual(view.refusals, [])
+  await view.unmount()
+})
+
+test('does not offer to rename a workspace when this Orca cannot', async () => {
+  const view = await mount(panel, {
+    host: connectedHost([], { 'redmine.renameWorkspaceSupport': () => ({ available: false }) }),
+    locale: 'en',
+    persisted: { plugin: { 'redmine.issueByWorkspace': { 'wt-a': { id: 4077, subject: 'Checkout screen' } } } }
+  })
+  await view.emit('workspace.changed', ws('shop-a'))
+  await view.settled()
+  assert.ok(view.find({ text: 'Task of this workspace' }))
+  assert.equal(view.find({ text: 'Rename workspace' }), null)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})

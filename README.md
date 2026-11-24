@@ -6,7 +6,7 @@ An Orca plugin (`plozmun.redmine-tasks`) that brings your Redmine tasks into the
 
 ## Install
 
-Requires Orca 1.4.248 or newer.
+Requires Orca 1.4.260 or newer.
 
 - From Orca's plugin catalog: search for **Redmine** (listing: https://www.onorca.dev/plugins/plozmun/orca-redmine).
 - Or from a local clone, for development: `orca plugin dev load <path-to-clone>`.
@@ -33,6 +33,7 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 - **Command palette**: `Redmine: my open tasks`.
 - **Agent state in the list** (Orca with host API 1.7 or later): a task whose linked workspace has an agent working, waiting for permission, or done and not yet looked at shows it in its row, kept current while the panel is open.
 - **Status bar count**: the number of open tasks assigned to you, beside a flag, with the Redmine panel one press away. Amber when one is overdue, red when one has an urgent or immediate priority; hover for the counts. It refreshes every few minutes, right after the panel changes a task, and is hidden while Redmine is not connected or you turn it off in Settings. The worker therefore runs for as long as the plugin is enabled.
+- **Rename the workspace after its task** (Orca with host API 1.5 or later): when the focused workspace is linked to the open task, its detail offers *Rename workspace*, which gives it the task's name (`4077 Checkout with saved cards`, from the [template](#settings)). It keeps the task number first, so the link and the task detection survive the rename. Only that click renames anything.
 - **English and Spanish UI**, following Orca's language.
 
 ## Usage
@@ -52,7 +53,7 @@ src/orca-workspaces.ts  Locates the focused workspace and its project (host list
 src/launch.ts           Workspace name and agent prompt for a task
 src/agent-env.ts        `REDMINE_ISSUE` and the optional prompt pointer for agents
 src/launch-here.ts      Prompt for "Launch agent here" when the context does not fit inline
-src/task-ref.ts         Task number in a workspace name or branch; branch template
+src/task-ref.ts         Task number in a workspace name or branch; branch and rename templates
 src/followups.ts        Agent-finish and workspace-removal follow-ups: transitions, working time, store rules
 src/plugin-key.ts       Which qualified plugin key (catalog or dev folder) the worker has
 src/links.ts            Storage keys for workspace ↔ task links
@@ -85,6 +86,7 @@ In Orca: **Settings → Plugins → Redmine**.
 | Notification when an agent finishes      | Off            | `Off`, `When an agent finishes`, or `When an agent finishes or needs input`. The follow-up always appears in the panel; this only adds a desktop notification with the task number and subject. |
 | Show my open tasks in the status bar     | On             | The count beside the flag in Orca's status bar. Off hides the item and stops its refresh.                                                       |
 | Refresh the status bar count every       | 5 minutes      | 1–60 minutes. The count also refreshes right after the panel changes a task or saves the connection.                                            |
+| Name for a renamed workspace             | empty          | What *Rename workspace* names the workspace: `{id}`, `{subject}`, `{tracker}`, `{project}`. Whitespace collapses, control characters are removed, the name is cut to 200 characters and always starts with the task number. Empty: `{id} {subject}`. |
 
 Templates accept `{id}`, `{subject}`, `{url}`, `{project}`, `{tracker}`, `{status}`, `{priority}` and `{assignee}`. Empty means a default in Orca's language. For example:
 
@@ -162,6 +164,7 @@ It gives up after 115 s (a panel request waits at most 120 s); a slow repo setup
 | `notifications:show` | Desktop notification when an agent finishes (off by default) |
 | `agent:launch`   | Start an agent in a new terminal of the current workspace  |
 | `storage:own`    | Workspace ↔ task links, follow-ups, shared by the panel and the worker |
+| `workspace:write` | Rename the focused workspace after its task, on request. The plugin calls only `workspace.rename`: it never opens workspaces or files, or runs Orca's commands. |
 
 Hooks and events (Orca waits only for the hook, at most 2 s, and carries on if it fails):
 

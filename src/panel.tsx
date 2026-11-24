@@ -188,6 +188,8 @@ const launchWhere = atom<LaunchWhere>('redmine.launchWhere', 'new', { persist: '
 // Plugin settings (Settings → Plugins → Redmine), read once and kept current.
 const instructionsTemplate = atom<string | null>(null)
 const defaultComments = atom<CommentsMode>('recent')
+/** Whether this Orca can rename a workspace (`workspace.rename`); null until the worker says. */
+const renameAvailable = atom<boolean | null>(null)
 
 async function loadSettings(): Promise<void> {
   try {
@@ -593,6 +595,20 @@ function assignById(id: number): Promise<void> {
   })
 }
 
+/**
+ * Gives the focused workspace the open task's name, from the `workspaceNameTemplate` setting. Only
+ * the explicit button calls this: the plugin never renames a workspace on its own.
+ */
+function renameWorkspace(issue: IssueDetail): Promise<void> {
+  return run(async () => {
+    const key = read(located)?.workspaceKey
+    if (!key) return
+    const fields = { id: issue.id, subject: issue.subject, tracker: issue.tracker, project: issue.project }
+    const answer = await plugin.request('redmine.renameWorkspace', { workspaceKey: key, issue: fields })
+    set(notice, t('rename.done', { name: answer.name }))
+  })
+}
+
 let locateSeq = 0
 
 /** Finds which Orca project the workspace comes from, then reloads the list with its project. */
@@ -687,6 +703,11 @@ export function setup(ctx: PanelContext): void {
   void plugin.request('redmine.launchHereSupport').then(
     ({ available }) => set(launchHereAvailable, available),
     () => set(launchHereAvailable, false)
+  )
+  // Whether "Rename workspace" (`workspace.rename`) can be offered; hidden when the worker cannot say.
+  void plugin.request('redmine.renameWorkspaceSupport').then(
+    ({ available }) => set(renameAvailable, available),
+    () => set(renameAvailable, false)
   )
 }
 
@@ -1660,9 +1681,16 @@ function IssueView({ issue }: { issue: IssueDetail }) {
         isWorkspaceTask ? (
           <Row justify="between" align="center" gap="xs">
             <Badge tone="success">{t('issue.isWorkspaceTask')}</Badge>
-            <Button size="xs" variant="ghost" onPress={() => assignIssue(null)}>
-              {t('issue.unassign')}
-            </Button>
+            <Row gap="xs" align="center">
+              {read(renameAvailable) === true ? (
+                <Button size="xs" variant="outline" icon="edit" disabled={disabled} onPress={() => renameWorkspace(issue)}>
+                  {t('issue.renameWorkspace')}
+                </Button>
+              ) : null}
+              <Button size="xs" variant="ghost" onPress={() => assignIssue(null)}>
+                {t('issue.unassign')}
+              </Button>
+            </Row>
           </Row>
         ) : (
           <Button size="sm" variant="outline" icon="link" onPress={() => assignIssue(issue)}>

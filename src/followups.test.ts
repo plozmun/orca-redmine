@@ -138,3 +138,34 @@ test('the notification setting is off by default and doneAndBlocked includes blo
   assert.equal(shouldNotify('doneAndBlocked', 'done'), true)
   assert.equal(shouldNotify('doneAndBlocked', 'blocked'), true)
 })
+
+test('a follow-up keeps the workspace, agent and session when known; old ones stay valid', () => {
+  const resumable = createFollowup({
+    kind: 'agentDone',
+    issueId: 1,
+    workspaceName: 'a',
+    at: 1000,
+    workspaceId: 'identity:wt-1',
+    agent: 'claude',
+    sessionId: 'sess-1'
+  })
+  assert.deepEqual(resumable, {
+    id: 'agentDone:1:1000',
+    kind: 'agentDone',
+    issueId: 1,
+    workspaceName: 'a',
+    at: 1000,
+    workspaceId: 'identity:wt-1',
+    agent: 'claude',
+    sessionId: 'sess-1'
+  })
+  const old = createFollowup({ kind: 'workspaceRemoved', issueId: 2, workspaceName: 'b', at: 2000 })
+  assert.equal('workspaceId' in old || 'agent' in old || 'sessionId' in old, false)
+  // Stored 0.2.x entries and new ones coexist, and a newer one still replaces the pending same kind.
+  assert.deepEqual(asFollowups([old, resumable]), [old, resumable])
+  assert.deepEqual(addFollowup([old], resumable), [resumable, old])
+  const newer = createFollowup({ kind: 'agentDone', issueId: 1, workspaceName: 'c', at: 3000 })
+  assert.deepEqual(addFollowup([old, resumable], newer), [old, newer])
+  // A malformed optional field drops that entry only.
+  assert.deepEqual(asFollowups([{ ...old, workspaceId: 3 }, { ...old, agent: '' }, { ...old, sessionId: null }, old]), [old])
+})

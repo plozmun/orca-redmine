@@ -217,5 +217,18 @@ export const es: Messages = {
   'statusBar.tooltip': 'Tareas abiertas asignadas a ti: {total}',
   'statusBar.overdue': 'vencidas: {count}',
   'statusBar.urgent': 'urgentes: {count}',
-  'statusBar.error': 'Redmine: {reason}'
+  'statusBar.error': 'Redmine: {reason}',
+
+  'agents.section': 'Agentes',
+  'agents.none': 'Sin agentes en este workspace',
+  'agents.show': 'Mostrar',
+  'agents.unknown': 'Agente',
+  'agentRow.working': 'Trabajando',
+  'agentRow.blocked': 'Necesita respuesta',
+  'agentRow.waiting': 'En espera',
+  'agentRow.done': 'Terminado',
+  'followup.resume': 'Reanudar agente',
+  'followup.resumed': 'Agente reanudado',
+  'followup.alreadyRunning': 'Ese agente ya está en marcha: mostrando su terminal',
+  'errors.agent_resume': 'No se pudo reanudar el agente ({detail})'
 }

@@ -20,6 +20,12 @@ export interface Followup {
   at: number
   /** Working time the plugin saw, in hours rounded to 0.25; absent when it did not see the start. */
   hours?: number
+  /** `agentDone`: the workspace's host id, when Orca named it (host API 1.7). */
+  workspaceId?: string
+  /** `agentDone`: the agent kind, when Orca reported one `agent.resume` accepts. */
+  agent?: string
+  /** `agentDone`: the session to resume, when Orca named it (host API 1.8). */
+  sessionId?: string
 }
 
 export type AgentState = 'working' | 'blocked' | 'waiting' | 'done'
@@ -98,6 +104,9 @@ export interface NewFollowup {
   workspaceName: string
   at: number
   hours?: number
+  workspaceId?: string
+  agent?: string
+  sessionId?: string
 }
 
 export function createFollowup(input: NewFollowup): Followup {
@@ -107,7 +116,10 @@ export function createFollowup(input: NewFollowup): Followup {
     issueId: input.issueId,
     workspaceName: input.workspaceName,
     at: input.at,
-    ...(input.hours === undefined ? {} : { hours: input.hours })
+    ...(input.hours === undefined ? {} : { hours: input.hours }),
+    ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }),
+    ...(input.agent === undefined ? {} : { agent: input.agent }),
+    ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId })
   }
 }
 
@@ -141,8 +153,16 @@ function isFollowup(value: unknown): value is Followup {
     typeof f.workspaceName === 'string' &&
     typeof f.at === 'number' &&
     Number.isFinite(f.at) &&
-    (f.hours === undefined || (typeof f.hours === 'number' && Number.isFinite(f.hours) && f.hours > 0))
+    (f.hours === undefined || (typeof f.hours === 'number' && Number.isFinite(f.hours) && f.hours > 0)) &&
+    // 0.2.x stored none of these: old follow-ups stay valid.
+    optionalText(f.workspaceId) &&
+    optionalText(f.agent) &&
+    optionalText(f.sessionId)
   )
+}
+
+function optionalText(value: unknown): boolean {
+  return value === undefined || (typeof value === 'string' && value.length > 0)
 }
 
 export type AgentNotification = 'off' | 'done' | 'doneAndBlocked'

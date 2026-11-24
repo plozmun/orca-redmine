@@ -32,7 +32,7 @@ import {
   type OrcaListing
 } from './orca-workspaces'
 import { contextFilePrompt, fitsLaunchPrompt } from './launch-here'
-import type { ConnectionStatus } from './protocol'
+import type { ConnectionStatus, TaskAgent, TaskWorkspaceAgents } from './protocol'
 import { isBookableDay } from './days'
 import { normalizeBaseUrl, projectSubtree, RedmineClient, RedmineError, type IssueDetail, type OpenCounts } from './redmine'
 import { branchFromTemplate, taskRefFromWorkspace, workspaceNameFor as workspaceNameFromTask } from './task-ref'
@@ -48,7 +48,8 @@ import {
   recordsFollowup,
   shouldNotify,
   type AgentTransition,
-  type Followup
+  type Followup,
+  type NewFollowup
 } from './followups'
 import { pickPluginKey, type ListedPlugin } from './plugin-key'
 
@@ -471,10 +472,7 @@ async function saveFollowups(orca: OrcaWorkerApi, followups: Followup[]): Promis
   orca.panels.post('redmine.followupsChanged', { followups })
 }
 
-async function recordFollowup(
-  orca: OrcaWorkerApi,
-  input: { kind: Followup['kind']; issueId: number; workspaceName: string; at: number; hours?: number }
-): Promise<void> {
+async function recordFollowup(orca: OrcaWorkerApi, input: NewFollowup): Promise<void> {
   await saveFollowups(orca, addFollowup(await storedFollowups(orca), createFollowup(input)))
 }
 
@@ -561,6 +559,124 @@ async function workspaceInfoFor(orca: OrcaWorkerApi, workspaceId: string, key: s
     orca.log(`workspace event (CLI): ${errorParts(error).errorDetail}`)
   }
   return { name: key, path: null }
+}
+
+// --- Agents of a task's linked workspaces, and resuming one from a follow-up ---
+
+/** A task can be linked to several workspaces; its detail lists at most this many, newest first. */
+const MAX_TASK_WORKSPACES = 5
+
+/** A row of the host's `agents.list` (host API 1.10). */
+interface HostAgentRow {
+  terminalId: string | null
+  title: string | null
+  agent: string | null
+  state: TaskAgent['state']
+  stateStartedAt: number
+  sessionId?: string | null
+}
+
+/** Agent kinds `agent.resume` takes (host API 1.10). Any other kind leaves the follow-up without one. */
+const RESUMABLE_AGENTS: ReadonlySet<string> = new Set([
+  'claude',
+  'codebuddy',
+  'codex',
+  'qoder',
+  'qoder-cn',
+  'qwen-code',
+  'gemini',
+  'antigravity',
+  'opencode',
+  'opencode2',
+  'pi',
+  'mimo-code',
+  'droid',
+  'grok',
+  'devin',
+  'omp',
+  'prime-agent',
+  'copilot',
+  'cursor',
+  'kimi',
+  'muse',
+  'zcode',
+  'dsh',
+  'jcode',
+  'kiro',
+  'hermes'
+])
+
+function resumableAgentKind(kind: string | null | undefined): string | null {
+  return kind && RESUMABLE_AGENTS.has(kind) ? kind : null
+}
+
+/** The host row without its task and session: what the panel lists. */
+function taskAgentOf(row: HostAgentRow): TaskAgent {
+  return {
+    terminalId: row.terminalId,
+    title: row.title,
+    agent: row.agent,
+    state: row.state,
+    stateStartedAt: row.stateStartedAt
+  }
+}
+
+/**
+ * `agents.list` for one workspace: the agents Orca reports there, or null when this Orca does not
+ * offer the method or refuses the id (a workspace removed while Orca was closed, say).
+ */
+async function listedAgents(orca: OrcaWorkerApi, workspaceId: string): Promise<HostAgentRow[] | null> {
+  if (!orca.host.has('agents.list')) return null
+  try {
+    const { agents } = (await orca.host.call('agents.list', { workspaceId })) as { agents: HostAgentRow[] }
+    return agents
+  } catch (error) {
+    orca.log(`agents.list ${workspaceId}: ${errorParts(error).errorDetail}`)
+    return null
+  }
+}
+
+/** The names of the host's workspaces by `workspace.list` id; empty when Orca cannot list them. */
+async function hostWorkspaceNames(orca: OrcaWorkerApi): Promise<Map<string, string>> {
+  const names = new Map<string, string>()
+  if (!orca.host.has('workspace.list')) return names
+  try {
+    const { workspaces } = (await orca.host.call('workspace.list', {})) as { workspaces: HostWorkspaceRow[] }
+    for (const row of workspaces) names.set(row.id, row.name)
+  } catch (error) {
+    orca.log(`workspace.list: ${errorParts(error).errorDetail}`)
+  }
+  return names
+}
+
+/**
+ * The agent kind of a finished pane: the workspace's agent with that terminal, else with that
+ * session. Null when Orca no longer lists it, or lists a kind `agent.resume` does not take.
+ */
+async function agentKindFor(
+  orca: OrcaWorkerApi,
+  workspaceId: string,
+  terminalId: string | null,
+  sessionId: string | null
+): Promise<string | null> {
+  const agents = await listedAgents(orca, workspaceId)
+  if (!agents) return null
+  const row =
+    (terminalId ? agents.find((a) => a.terminalId === terminalId) : undefined) ??
+    (sessionId ? agents.find((a) => a.sessionId === sessionId) : undefined)
+  return resumableAgentKind(row?.agent)
+}
+
+/** The session an `agent.status.changed` event names (host API 1.8), when it comes. */
+function sessionIdOf(event: object): string | null {
+  const id = (event as { sessionId?: unknown }).sessionId
+  return typeof id === 'string' && id ? id : null
+}
+
+/** A terminal an `agent.status.changed` event names, when it comes. */
+function terminalIdOf(event: object): string | null {
+  const id = (event as { terminalId?: unknown }).terminalId
+  return typeof id === 'string' && id ? id : null
 }
 
 /** A desktop notification naming the task, in the machine's language. Never description text. */
@@ -731,12 +847,20 @@ export default function activate(orca: OrcaWorkerApi): void {
       }
       // A cancellation, supersede or interruption means the person stopped it and is looking.
       if (!recordsFollowup(change.outcome)) return
+      // What resuming the session needs: the workspace's host id, the session, and the kind (which
+      // the event does not carry, so Orca's agent list is asked). Missing parts just mean no Resume.
+      const listId = listedId(event)
+      const sessionId = sessionIdOf(event)
+      const agent = listId ? await agentKindFor(orca, listId, terminalIdOf(event), sessionId) : null
       await recordFollowup(orca, {
         kind: 'agentDone',
         issueId: linked.id,
         workspaceName: info.name,
         at: event.receivedAt,
-        ...(change.hours === undefined ? {} : { hours: change.hours })
+        ...(change.hours === undefined ? {} : { hours: change.hours }),
+        ...(listId ? { workspaceId: listId } : {}),
+        ...(sessionId ? { sessionId } : {}),
+        ...(agent ? { agent } : {})
       })
       if (shouldNotify(mode, 'done')) await notifyAgent(orca, 'done', linked)
     } catch (error) {
@@ -978,6 +1102,69 @@ export default function activate(orca: OrcaWorkerApi): void {
     const renamed = await orca.host.call('workspace.rename', { workspaceId: `identity:${workspaceKey}`, name })
     orca.log(`renameWorkspace ${workspaceKey}: ${renamed.name}`)
     return { name: renamed.name }
+  })
+
+  // The agents of a task's linked workspaces: one `agents.list` per workspace, in parallel, newest
+  // links first. A workspace Orca no longer knows is left out (and logged), never an error here.
+  /** Terminals the last `redmine.taskAgents` answer named, plus any a resume reported. */
+  let listedAgentTerminals = new Set<string>()
+
+  orca.panels.handle('redmine.taskAgents', async ({ issueId }) => {
+    const links = await readMap<AssignedIssue>(orca, ISSUE_BY_WORKSPACE)
+    const keys = Object.keys(links)
+      .filter((key) => links[key]?.id === issueId)
+      .reverse()
+      .slice(0, MAX_TASK_WORKSPACES)
+    const names = keys.length > 0 ? await hostWorkspaceNames(orca) : new Map<string, string>()
+    const found = await Promise.all(
+      keys.map(async (key): Promise<TaskWorkspaceAgents | null> => {
+        const workspaceId = `identity:${key}`
+        const agents = await listedAgents(orca, workspaceId)
+        if (!agents) return null
+        return { key, name: names.get(workspaceId) ?? key, agents: agents.map(taskAgentOf) }
+      })
+    )
+    const workspaces = found.filter((w): w is TaskWorkspaceAgents => w !== null)
+    listedAgentTerminals = new Set(
+      workspaces
+        .flatMap((w) => w.agents.map((a) => a.terminalId))
+        .filter((id): id is string => Boolean(id))
+    )
+    return { workspaces }
+  })
+
+  orca.panels.handle('redmine.agentActionsSupport', async () => ({
+    show: orca.host.has('terminal.focus') && orca.grantedCapabilities.includes('workspace:write'),
+    resume: orca.host.has('agent.resume')
+  }))
+
+  orca.panels.handle('redmine.showAgent', async ({ terminalId }) => {
+    // Only a terminal the last `taskAgents` answer listed, or one a resume reported: the panel
+    // cannot focus an arbitrary terminal.
+    if (!listedAgentTerminals.has(terminalId)) throw new RedmineError('invalid_params', `terminal not listed: ${terminalId}`)
+    if (!orca.host.has('terminal.focus')) throw new RedmineError('unknown_method', 'terminal.focus')
+    const { focused } = (await orca.host.call('terminal.focus', { terminalId })) as { focused: boolean }
+    return { focused }
+  })
+
+  orca.panels.handle('redmine.resumeAgent', async ({ followupId }) => {
+    const followup = (await storedFollowups(orca)).find((f) => f.id === followupId)
+    if (!followup?.workspaceId || !followup.agent || !followup.sessionId) {
+      throw new RedmineError('agent_resume', 'the follow-up has no workspace, agent and session')
+    }
+    if (!orca.host.has('agent.resume')) throw new RedmineError('agent_resume', 'agent.resume')
+    try {
+      const resumed = (await orca.host.call('agent.resume', {
+        workspaceId: followup.workspaceId,
+        agent: followup.agent,
+        sessionId: followup.sessionId
+      })) as { terminalId: string; started: boolean }
+      // "Already running" names the terminal that has it: the panel may show that one.
+      listedAgentTerminals.add(resumed.terminalId)
+      return resumed
+    } catch (error) {
+      throw new RedmineError('agent_resume', errorParts(error).errorDetail)
+    }
   })
 
   // Command palette. No panel asked, so it answers in the machine's language.

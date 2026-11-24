@@ -1,5 +1,5 @@
 // Runs src/worker.ts's activate(orca) over a mock host, with `fetch` and the Orca CLI stubbed.
-import { afterEach, assert, mockHost, mountWorker, test } from 'orca/testing'
+import { afterEach, assert, hostError, mockHost, mountWorker, test } from 'orca/testing'
 import { systemLocale, translate } from './i18n'
 import { runOrcaJson } from './orca-workspaces'
 import { localDateDaysAgo, resetRedmineCaches } from './redmine'
@@ -1537,5 +1537,228 @@ test('rename is offered and attempted only when Orca has workspace.rename', asyn
   )
   assert.deepEqual(host.callsOf('workspace.rename'), [])
   main.setRenameOffered(null)
+  await worker.deactivate()
+})
+
+// --- Agents of a task's linked workspaces, and resuming one ---
+
+const agentRow = (terminalId: string | null, state: 'working' | 'blocked' | 'waiting' | 'done', extra: Record<string, unknown> = {}) => ({
+  terminalId,
+  title: terminalId ? `Terminal ${terminalId}` : null,
+  agent: 'claude',
+  state,
+  stateStartedAt: 1_000,
+  ...extra
+})
+
+const taskLink = (id: number) => ({ id, subject: `Task ${id}` })
+
+test('task agents come from each linked workspace, newest first, at most five, skipping the ones Orca refuses', async () => {
+  const keys = ['wt-1', 'wt-2', 'wt-3', 'wt-4', 'wt-5', 'wt-6', 'wt-7']
+  const links = Object.fromEntries(keys.map((key, i) => [key, taskLink(i === 1 ? 4081 : 4077)]))
+  const host = mockHost({
+    capabilities: ['workspace:read', 'storage:own', 'agent:read'],
+    storage: { 'links.issueByWorkspace': links },
+    results: {
+      'workspace.list': {
+        workspaces: keys.map((key, i) => ({
+          id: `identity:${key}`,
+          kind: 'worktree',
+          name: `4077-${i}`,
+          path: `/p/${key}`,
+          branch: 'b',
+          hostId: 'local'
+        })),
+        truncated: false
+      },
+      'agents.list': ({ workspaceId }: { workspaceId: string }) => {
+        if (workspaceId === 'identity:wt-5') throw hostError('action_failed', 'no such workspace')
+        return { agents: [agentRow(`t-${workspaceId.slice('identity:'.length)}`, 'working')] }
+      }
+    }
+  })
+  const worker = await mountWorker(main, { host })
+
+  const answer = await worker.request('redmine.taskAgents', { issueId: 4077 })
+  // Six workspaces are linked to #4077 (wt-1 and wt-3..wt-7): the newest five are asked, wt-5 left out.
+  assert.deepEqual(
+    (host.callsOf('agents.list') as { workspaceId: string }[]).map((p) => p.workspaceId),
+    ['identity:wt-7', 'identity:wt-6', 'identity:wt-5', 'identity:wt-4', 'identity:wt-3']
+  )
+  assert.deepEqual(
+    answer.workspaces.map((w) => w.key),
+    ['wt-7', 'wt-6', 'wt-4', 'wt-3']
+  )
+  assert.equal(answer.workspaces[0].name, '4077-6')
+  assert.deepEqual(answer.workspaces[0].agents, [
+    { terminalId: 't-wt-7', title: 'Terminal t-wt-7', agent: 'claude', state: 'working', stateStartedAt: 1_000 }
+  ])
+  assert.ok(worker.logs.some((line) => line.startsWith('agents.list identity:wt-5:')))
+  // Another task has no agents, and nothing more is asked.
+  assert.deepEqual(await worker.request('redmine.taskAgents', { issueId: 9999 }), { workspaces: [] })
+  await worker.deactivate()
+
+  // Without `agents.list` (an older Orca) the detail just shows no agents.
+  const older = await mountWorker(main, { host: mockHost({ capabilities: ['storage:own'], storage: { 'links.issueByWorkspace': links } }) })
+  assert.deepEqual(await older.request('redmine.taskAgents', { issueId: 4077 }), { workspaces: [] })
+  await older.deactivate()
+})
+
+test('show agent focuses only a terminal the last taskAgents answer listed', async () => {
+  const host = mockHost({
+    capabilities: ['workspace:read', 'storage:own', 'agent:read', 'workspace:write'],
+    storage: { 'links.issueByWorkspace': { 'wt-1': taskLink(4077) } },
+    results: {
+      'workspace.list': { workspaces: [], truncated: false },
+      'agents.list': { agents: [agentRow('t1', 'working')] },
+      'terminal.focus': { focused: true }
+    }
+  })
+  const worker = await mountWorker(main, { host })
+  await assert.rejects(worker.request('redmine.showAgent', { terminalId: 't9' }), (e: { code: string }) => e.code === 'invalid_params')
+  assert.deepEqual(host.callsOf('terminal.focus'), [])
+
+  await worker.request('redmine.taskAgents', { issueId: 4077 })
+  assert.deepEqual(await worker.request('redmine.showAgent', { terminalId: 't1' }), { focused: true })
+  assert.deepEqual(host.callsOf('terminal.focus'), [{ terminalId: 't1' }])
+  await worker.deactivate()
+})
+
+test('agent actions need terminal.focus and workspace:write to show, and agent.resume to resume', async () => {
+  let worker = await mountWorker(main, { host: mockHost({ capabilities: ['workspace:write'] }) })
+  assert.deepEqual(await worker.request('redmine.agentActionsSupport'), { show: true, resume: true })
+  await worker.deactivate()
+
+  // Without the approved capability, orca refuses terminal.focus: no Show button.
+  worker = await mountWorker(main, { host: mockHost({ capabilities: [] }) })
+  assert.deepEqual(await worker.request('redmine.agentActionsSupport'), { show: false, resume: true })
+  await worker.deactivate()
+})
+
+/** A linked workspace whose main agent just finished, with agents.list answering `agents`. */
+async function finishedAgent(agents: unknown, extraEvent: Record<string, unknown> = {}, withSession = true) {
+  const host = mockHost({
+    capabilities: ['workspace:read', 'agent:read', 'storage:own', 'settings:own'],
+    storage: { 'links.issueByWorkspace': { 'wt-4077-checkout': taskLink(4077) } },
+    results: {
+      'workspace.list': { workspaces: [hostRow4077], truncated: false },
+      'agents.list': { agents }
+    }
+  })
+  const worker = await mountWorker(main, { host })
+  await worker.emit('agent.status.changed', {
+    ...agentEvent('identity:wt-4077-checkout', 'done', 5_000, 'success'),
+    workspaceListId: 'identity:wt-4077-checkout',
+    terminalId: 't9',
+    ...(withSession ? { sessionId: 'sess-9' } : {}),
+    ...extraEvent
+  })
+  return { worker, host, followup: followupsOf(host)[0] }
+}
+
+test('a finished agent remembers its workspace, session and kind for resuming', async () => {
+  const { worker, host, followup } = await finishedAgent([agentRow('t9', 'done', { sessionId: 'sess-9' })])
+  assert.ok(followup, `logs: ${worker.logs.join(' | ')}`)
+  assert.equal(followup.workspaceId, 'identity:wt-4077-checkout')
+  assert.equal(followup.sessionId, 'sess-9')
+  assert.equal(followup.agent, 'claude')
+  assert.deepEqual(host.callsOf('agents.list').at(-1), { workspaceId: 'identity:wt-4077-checkout' })
+  await worker.deactivate()
+})
+
+test('a kind Orca does not report, or agent.resume does not take, leaves the follow-up without one', async () => {
+  for (const agents of [[], [agentRow('t9', 'done', { sessionId: 'sess-9', agent: 'not-an-agent' })]]) {
+    const { worker, followup } = await finishedAgent(agents)
+    assert.equal(followup.sessionId, 'sess-9')
+    assert.equal(followup.agent, undefined)
+    await worker.deactivate()
+  }
+})
+
+test('an event without a session still finds the kind by terminal, and stores no session', async () => {
+  const { worker, followup } = await finishedAgent([agentRow('t9', 'done')], {}, false)
+  assert.equal(followup.agent, 'claude')
+  assert.equal(followup.sessionId, undefined)
+  await worker.deactivate()
+})
+
+test('resume reads the follow-up from storage, calls agent.resume and leaves it pending', async () => {
+  const followup = createFollowup({
+    kind: 'agentDone',
+    issueId: 4077,
+    workspaceName: '4077-checkout',
+    at: 5_000,
+    workspaceId: 'identity:wt-4077-checkout',
+    agent: 'claude',
+    sessionId: 'sess-9'
+  })
+  const host = mockHost({
+    capabilities: ['workspace:write', 'agent:launch', 'storage:own'],
+    storage: { followups: [followup] },
+    results: { 'agent.resume': { terminalId: 't5', started: true }, 'terminal.focus': { focused: true } }
+  })
+  const worker = await mountWorker(main, { host })
+  assert.deepEqual(await worker.request('redmine.resumeAgent', { followupId: followup.id }), { terminalId: 't5', started: true })
+  assert.deepEqual(host.callsOf('agent.resume'), [
+    { workspaceId: 'identity:wt-4077-checkout', agent: 'claude', sessionId: 'sess-9' }
+  ])
+  // Not dismissed, and nothing new was written to Redmine (no fetch was stubbed: it would throw).
+  assert.deepEqual((await worker.request('redmine.followups.get')).followups, [followup])
+  await worker.deactivate()
+})
+
+test('an already running session answers with its terminal, which the panel may then show', async () => {
+  const followup = createFollowup({
+    kind: 'agentDone',
+    issueId: 4077,
+    workspaceName: '4077-checkout',
+    at: 5_000,
+    workspaceId: 'identity:wt-4077-checkout',
+    agent: 'claude',
+    sessionId: 'sess-9'
+  })
+  const host = mockHost({
+    capabilities: ['workspace:write', 'agent:launch', 'storage:own'],
+    storage: { followups: [followup] },
+    results: { 'agent.resume': { terminalId: 't6', started: false }, 'terminal.focus': { focused: true } }
+  })
+  const worker = await mountWorker(main, { host })
+  assert.deepEqual(await worker.request('redmine.resumeAgent', { followupId: followup.id }), { terminalId: 't6', started: false })
+  assert.deepEqual(await worker.request('redmine.showAgent', { terminalId: 't6' }), { focused: true })
+  await worker.deactivate()
+})
+
+test('resume fails with agent_resume for a host error or a follow-up without a session', async () => {
+  const incomplete = createFollowup({ kind: 'agentDone', issueId: 4077, workspaceName: '4077-checkout', at: 5_000 })
+  let worker = await mountWorker(main, { host: mockHost({ capabilities: ['agent:launch', 'storage:own'], storage: { followups: [incomplete] } }) })
+  await assert.rejects(worker.request('redmine.resumeAgent', { followupId: incomplete.id }), (e: { code: string }) => e.code === 'agent_resume')
+  await worker.deactivate()
+
+  const resumable = createFollowup({
+    kind: 'agentDone',
+    issueId: 4077,
+    workspaceName: '4077-checkout',
+    at: 6_000,
+    workspaceId: 'identity:wt-4077-checkout',
+    agent: 'claude',
+    sessionId: 'sess-9'
+  })
+  worker = await mountWorker(main, {
+    host: mockHost({
+      capabilities: ['agent:launch', 'storage:own'],
+      storage: { followups: [resumable] },
+      results: {
+        'agent.resume': () => {
+          throw hostError('action_failed', 'no such session')
+        }
+      }
+    })
+  })
+  await assert.rejects(
+    worker.request('redmine.resumeAgent', { followupId: resumable.id }),
+    (e: { code: string; message: string }) => e.code === 'agent_resume' && e.message.includes('no such session')
+  )
+  // The follow-up stays after a failure too.
+  assert.deepEqual((await worker.request('redmine.followups.get')).followups, [resumable])
   await worker.deactivate()
 })

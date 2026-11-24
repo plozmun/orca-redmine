@@ -63,11 +63,12 @@ function connectedHost(
       ],
       'redmine.launchWorkspace': (input) => {
         asked.push({ launch: input })
-        return { workspaceKey: 'wt-new', displayName: '4077-checkout-screen', branch: 'pablo/4077-checkout-screen', path: '/p', launch: 'terminal', name: '4077-checkout-screen' }
+        return { workspaceKey: 'wt-new', name: '4077-checkout-screen' }
       },
       'redmine.followups.get': () => ({ followups: [] }),
       'redmine.followups.dismiss': () => ({ followups: [] }),
       'redmine.launchHereSupport': () => ({ available: true }),
+      'redmine.openWorkspaceSupport': () => ({ available: true }),
       ...extra
     }
   })
@@ -282,7 +283,7 @@ test('launches the agent in a new workspace and assigns it the task', async () =
     }
   })
   assert.deepEqual(view.persisted.storage['links.issueByWorkspace'], { 'wt-new': { id: 4077, subject: 'Checkout screen' } })
-  assert.ok(view.find({ text: 'Workspace “4077-checkout-screen” created on branch pablo/4077-checkout-screen. Claude Code launched. Task assigned.' }))
+  assert.ok(view.find({ text: 'Workspace “4077-checkout-screen” created. Claude Code launched. Task assigned.' }))
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })
@@ -853,6 +854,76 @@ test('a task whose linked workspace has an agent at work shows it, and changes a
   await view.settled()
   assert.ok(view.find({ text: 'Agent done' }))
   assert.equal(view.find({ text: 'Agent working' }), null)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+// --- Go to workspace ---
+
+test('go to workspace shows the task’s other workspace from the task detail', async () => {
+  const asked: { issueId: number }[] = []
+  const host = connectedHost([], {
+    'redmine.openWorkspaceSupport': (() => ({ available: true })) as never,
+    'redmine.openWorkspace': ((input: { issueId: number }) => {
+      asked.push(input)
+      return { opened: true }
+    }) as never
+  })
+  const view = await mount(panel, {
+    host,
+    locale: 'en',
+    persisted: { plugin: { 'redmine.issueByWorkspace': { 'wt-b': { id: 4077, subject: 'Checkout screen' } } } }
+  })
+  await view.emit('workspace.changed', ws('shop-a'))
+  await view.press({ type: 'ListItem' })
+  assert.ok(view.find({ text: 'Go to workspace' }))
+  await view.press({ text: 'Go to workspace' })
+  assert.deepEqual(asked, [{ issueId: 4077 }])
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('go to workspace stays hidden for the focused workspace and when this Orca cannot open workspaces', async () => {
+  // The task is the focused workspace's: nothing to jump to.
+  let view = await mount(panel, {
+    host: connectedHost([], { 'redmine.openWorkspaceSupport': (() => ({ available: true })) as never }),
+    locale: 'en',
+    persisted: { plugin: { 'redmine.issueByWorkspace': { 'wt-a': { id: 4077, subject: 'Checkout screen' } } } }
+  })
+  await view.emit('workspace.changed', ws('shop-a'))
+  assert.ok(view.find({ text: 'Task of this workspace' }))
+  assert.equal(view.find({ text: 'Go to workspace' }), null)
+  await view.unmount()
+
+  // Linked elsewhere, but the worker says `workspace.open` is not available here.
+  view = await mount(panel, {
+    host: connectedHost([], { 'redmine.openWorkspaceSupport': (() => ({ available: false })) as never }),
+    locale: 'en',
+    persisted: { plugin: { 'redmine.issueByWorkspace': { 'wt-b': { id: 4077, subject: 'Checkout screen' } } } }
+  })
+  await view.emit('workspace.changed', ws('shop-a'))
+  await view.press({ type: 'ListItem' })
+  assert.equal(view.find({ text: 'Go to workspace' }), null)
+  assert.deepEqual(view.errors, [])
+  await view.unmount()
+})
+
+test('go to workspace shows the workspace of an agent follow-up', async () => {
+  const asked: { issueId: number }[] = []
+  const view = await mount(panel, {
+    host: followupHost([agentDone], [], [], {
+      'redmine.openWorkspaceSupport': (() => ({ available: true })) as never,
+      'redmine.openWorkspace': ((input: { issueId: number }) => {
+        asked.push(input)
+        return { opened: true }
+      }) as never
+    }),
+    locale: 'en',
+    persisted: { plugin: { 'redmine.issueByWorkspace': { 'wt-b': { id: 4077, subject: 'Checkout screen' } } } }
+  })
+  assert.ok(view.find({ text: 'Agent finished on #4077' }))
+  await view.press({ text: 'Go to workspace' })
+  assert.deepEqual(asked, [{ issueId: 4077 }])
   assert.deepEqual(view.errors, [])
   await view.unmount()
 })

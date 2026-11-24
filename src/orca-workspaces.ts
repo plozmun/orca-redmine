@@ -1,6 +1,6 @@
 // Finds Orca workspaces for the worker. The stable workspace key and, from host API 1.7, the Orca
-// project come from the host's `workspace.list`; the Orca CLI (`orca worktree list|create`, `orca
-// project list`) is the fallback for older Orca, and still creates new worktrees.
+// project come from the host's `workspace.list`; the Orca CLI (`orca worktree list`, `orca project
+// list`) is the fallback for older Orca. Creating workspaces is the host's (`workspace.create`).
 import { RedmineError } from './redmine'
 
 export interface WorktreeRow {
@@ -211,15 +211,6 @@ export function unknownProjectKeys(map: Readonly<Record<string, string>>, hostId
   return Object.keys(map).filter((key) => !hostIds.has(key))
 }
 
-/**
- * The CLI project id `orca worktree create --project` takes for a project picked by its host id
- * (a repository id). An id the CLI already lists, or one it does not know, is passed unchanged.
- */
-export function cliProjectIdFor(id: string, cliProjects: readonly OrcaProjectRow[]): string {
-  if (cliProjects.some((p) => p.id === id)) return id
-  return cliProjects.find((p) => p.sourceRepoIds?.includes(id))?.id ?? id
-}
-
 /** The link key of the focused worktree in the host's listing, or null. Folders are never linked. */
 export function matchHostWorkspace(rows: readonly HostWorkspaceRow[], context: FocusedContext): string | null {
   const id = findWorkspaceId(rows, context)
@@ -268,66 +259,6 @@ export async function listOrca(): Promise<OrcaListing> {
 
 export function clearOrcaCache(): void {
   cache = null
-}
-
-export interface CreateWorktreeOptions {
-  orcaProjectId: string
-  name: string
-  agent: string | null
-  prompt: string
-  baseBranch?: string
-  comment?: string
-  activate: boolean
-}
-
-export interface CreatedWorktree {
-  workspaceKey: string | null
-  displayName: string | null
-  branch: string | null
-  path: string | null
-  /** What started: 'structured' (chat), 'terminal', or null when no agent was requested. */
-  launch: string | null
-}
-
-export function createWorktreeArgs(o: CreateWorktreeOptions): string[] {
-  const args = ['worktree', 'create', '--project', o.orcaProjectId, '--name', o.name, '--no-parent']
-  if (o.agent) args.push('--agent', o.agent, '--prompt', o.prompt)
-  if (o.baseBranch?.trim()) args.push('--base-branch', o.baseBranch.trim())
-  if (o.comment) args.push('--comment', o.comment)
-  if (o.activate) args.push('--activate')
-  return args
-}
-
-/** First object in the reply shaped like a worktree (has `identity.key`, or `path` and `branch`). */
-function findWorktree(value: any, depth = 0): any {
-  if (!value || typeof value !== 'object' || depth > 4) return null
-  if (value.identity?.key || (typeof value.path === 'string' && 'branch' in value)) return value
-  for (const key of ['worktree', 'workspace', 'result']) {
-    const found = findWorktree(value[key], depth + 1)
-    if (found) return found
-  }
-  return null
-}
-
-export function parseCreated(result: any): CreatedWorktree {
-  const wt = findWorktree(result)
-  return {
-    workspaceKey: wt?.identity?.key ?? wt?.id ?? null,
-    displayName: wt?.displayName ?? null,
-    branch: wt?.branch ? shortBranch(wt.branch) : null,
-    path: wt?.path ?? null,
-    launch: result?.launch?.outcome?.kind ?? (result?.agentTerminalHandle ? 'terminal' : null)
-  }
-}
-
-/**
- * Creates the worktree (and launches the agent) through the Orca CLI. Gives up after 115 s, before
- * the 120 s a panel request may wait at most.
- */
-export async function createWorktree(o: CreateWorktreeOptions): Promise<CreatedWorktree> {
-  const created = parseCreated(await runOrcaJson(createWorktreeArgs(o), 115_000))
-  clearOrcaCache()
-  return created
 }
 
 /** What the task list shows about a linked workspace's agent. */

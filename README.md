@@ -6,7 +6,7 @@ An Orca plugin (`plozmun.redmine-tasks`) that brings your Redmine tasks into the
 
 ## Install
 
-Requires Orca 1.4.248 or newer.
+Requires Orca 1.4.260 or newer. The `orca` CLI is only needed to open the panel from the status bar and, once per install, to move project mappings saved by 0.2.0 or earlier: creating workspaces, local or SSH, works without it.
 
 - From Orca's plugin catalog: search for **Redmine** (listing: https://www.onorca.dev/plugins/plozmun/orca-redmine).
 - Or from a local clone, for development: `orca plugin dev load <path-to-clone>`.
@@ -26,7 +26,8 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 - **Record the start in Redmine** (optional, off by default): a comment naming the workspace and branch, and optionally a move from the first open status (New) to the next one.
 - **Follow-ups after agent work**: when the main agent of a workspace linked to a task finishes (success, failure or Orca could not tell), or when a linked worktree is removed, a follow-up appears at the top of the task list. One click opens the task, comments, changes status, logs time (pre-filled with the agent's working time, rounded to 0.25 h) or dismisses it. **Nothing is written to Redmine without that click**, and follow-ups survive closing the panel and restarting Orca.
 - **Optional notification** (off by default): a desktop notification when an agent on a linked task finishes (`done`) or also when it needs input (`doneAndBlocked`). It names the task number and subject only, never the description or comments.
-- **Launch agent → New workspace**: from a task, create a worktree in an Orca project, start an agent with the task context, and assign the task to the new workspace — like Orca does for GitHub, GitLab, Jira and Linear.
+- **Launch agent → New workspace**: from a task, create a worktree and start an agent with the task context, then assign the task to the new workspace — like Orca does for GitHub, GitLab, Jira and Linear. It goes through Orca's host API (`workspace.create`), so it works for local and SSH projects, runs the project's setup and Orca's hooks, and needs no `orca` CLI.
+- **Go to workspace**: from a task linked to another workspace, or from an "agent finished" follow-up, show that workspace in one press (`workspace.open`).
 - **Launch agent → This workspace**: starts the chosen agent in a new terminal of the current workspace with the same instructions and context, and assigns the task to it when it has none. If the prompt would exceed Orca's 4,096-character limit, the context goes in the file *Send to terminal* uses and the prompt points to it.
 - **Send to terminal**: types the task prompt into a terminal of the current workspace. It **does not press Enter**, so you can review it first. A terminal line cannot carry the description and comments, so they go in a file (`<tmp>/orca-redmine/<id>.md`, readable only by you) that the prompt points to.
 - **Works without redmine-cli**: agents get the task text from the plugin. When the [`redmine` CLI](#redmine-cli) is installed, the prompt also tells the agent it can use it to update the task; when it is not, the panel suggests installing it.
@@ -48,7 +49,7 @@ It runs a worker with your user's access (see [Permissions](#permissions)), so O
 orca-plugin.json        Manifest: panel, command, settings and capabilities
 assets/                 Plugin icon and cover for the plugin page
 src/redmine.ts          Redmine REST API client (no Orca dependency)
-src/orca-workspaces.ts  Locates the focused workspace and its project (host listing, then `orca` CLI), agent states, creates worktrees
+src/orca-workspaces.ts  Locates the focused workspace and its project (host listing, then `orca` CLI), agent states
 src/launch.ts           Workspace name and agent prompt for a task
 src/agent-env.ts        `REDMINE_ISSUE` and the optional prompt pointer for agents
 src/launch-here.ts      Prompt for "Launch agent here" when the context does not fit inline
@@ -119,11 +120,21 @@ Agents started in a linked workspace also find the task number in `REDMINE_ISSUE
 
 The plugin API gives the focused workspace's name, branch, terminals and (host API 1.7 and later) its `workspace.list` id. The worker finds that row in Orca's `workspace.list`, by id or else by name and branch, to get the stable id tasks are linked to and, from host API 1.7, the Orca project it belongs to. That host id (`identity:<key>`) is also what Orca's workspace methods take, so *Launch agent here* finds the focused workspace without the CLI.
 
-On current Orca the `orca` CLI is therefore only needed to create a workspace (`orca worktree create`), to open the panel from the status bar, and once to move project mappings made by 0.2.0 or earlier: those were stored under the CLI's project ids (`git:<host>/<path>`), while the host names projects by repository id, so each mapping is copied to its repositories' ids (the old key stays). On older Orca the worker still runs `orca worktree list` and `orca project list` (cached for 15 s) for the project, and for the stable id when `workspace.list` is missing. If the CLI is not on the worker's PATH, set `ORCA_CLI`.
+On current Orca the `orca` CLI is therefore only needed to open the panel from the status bar, once to move project mappings made by 0.2.0 or earlier, and when the host listing is truncated or does not name the workspace (see [Orca CLI](#orca-cli)).
 
 Mappings (Orca project → Redmine project, workspace → task) live in the plugin's storage (`storage:own`), shared by the panel and the worker; 0.1.x kept them in the panel only and they are copied over once. Orca rejects Redmine URLs in `orca reference`, so they do not appear as native workspace links.
 
 When a worktree is created, Orca's `workspace.created` event names it by the CLI's `<repoId>::<path>` id, so the worker looks it up in `orca worktree list` (and `workspace.list` by path) to get the same stable key. Task references: the name (else the branch) starting with a number of 3+ digits (`4077-…`, last path segment), or containing `#N`, `redmine-N` or `rm-N`. A number after a word (`release-2026`, `bug-4321`) is not taken.
+
+## Orca CLI
+
+Orca's host API covers the plugin's work, so the `orca` command is only needed to:
+
+- open the panel from the status bar (`orca plugin open <plugin-key> --panel redmine`): Orca has no host method to reveal a panel;
+- move project mappings saved by 0.2.0 or earlier to host project ids, once per install: they were stored under the CLI's project ids (`git:<host>/<path>`), while the host names projects by repository id, so each mapping is copied to its repositories' ids (the old key stays);
+- find a workspace when the host's `workspace.list` is truncated or does not name it.
+
+If the CLI is not on the worker's PATH, set `ORCA_CLI`. Creating workspaces (local or SSH), listing projects, locating the focused workspace and launching agents all go through the host API.
 
 ## Creating a workspace from a task
 
@@ -133,20 +144,14 @@ How Orca does it for its integrations (source at github.com/stablyai/orca: `src/
 | ------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | Name    | `<key> <subject>` → 48-character slug (`sta-335-fix-login`, `issue-123`)         | `<number>-<subject>` → `37046-apply-the-brand-guide`                      |
 | Branch  | Orca's configured branch prefix + the slug                                       | the same: Orca applies its prefix                                         |
-| Link    | the worktree's `linkedItems` (`--reference`, `--issue`, `--linear-issue`…)       | Orca rejects Redmine URLs: stored in the plugin and in `--comment`        |
+| Link    | the worktree's `linkedItems` (`--reference`, `--issue`, `--linear-issue`…)       | Orca rejects Redmine URLs: stored in the plugin                           |
 | Prompt  | `issueCommand` template (default `Complete {{artifact_url}}`) + context          | editable instructions (localized default) + context                       |
 | Context | `BEGIN/END LINKED WORK ITEM CONTEXT` block, untrusted, at most 12,000 characters | the same format: subject, metadata, description, last 5 comments          |
-| Agent   | chosen in the composer (chat or terminal per your setting)                       | `orca worktree create --agent <id> --prompt …` (the same launch path)     |
+| Agent   | chosen in the composer (chat or terminal per your setting)                       | `workspace.create` starts it once the project's setup has run             |
 
-The command the worker runs:
+"Launch agent → New workspace" calls Orca's host method `workspace.create { projectId, name, baseBranch?, agent?, prompt?, open }` (capability `workspace:create`) with the host project id the picker lists. Orca creates the branch and worktree, local or SSH, runs the project's setup and Orca's hooks, and starts the agent with the prompt. The returned `workspaceId` is linked to the task before the panel answers, so the panel and `workspace.created` agree.
 
-```sh
-orca worktree create --project <orca-project> --name <number-subject> --no-parent \
-  --agent claude --prompt "<instructions + context>" [--base-branch develop] \
-  --comment "Redmine #N: subject" [--activate] --json
-```
-
-It gives up after 115 s (a panel request waits at most 120 s); a slow repo setup may still finish creating the workspace.
+The prompt follows the same rule as *Launch agent here*: when it would exceed Orca's 4,096 characters, the context goes in the file *Send to terminal* uses and the prompt points at it. If the workspace is created but the agent cannot start, the workspace is still linked to the task and the panel shows the agent error.
 
 ## Permissions
 
@@ -160,7 +165,9 @@ It gives up after 115 s (a panel request waits at most 120 s); a slow repo setup
 | `agent:read`     | Notice when an agent in a linked workspace finishes or blocks |
 | `terminal:send`  | Type the task prompt into the chosen terminal              |
 | `notifications:show` | Desktop notification when an agent finishes (off by default) |
-| `agent:launch`   | Start an agent in a new terminal of the current workspace  |
+| `agent:launch`   | Start an agent in a new terminal of the current workspace, or in a new one (`workspace.create` with an agent) |
+| `workspace:create` | Create a task's workspace, branch and worktree, local or SSH |
+| `workspace:write` | Show a task's linked workspace ("Go to workspace") |
 | `storage:own`    | Workspace ↔ task links, follow-ups, shared by the panel and the worker |
 
 Hooks and events (Orca waits only for the hook, at most 2 s, and carries on if it fails):

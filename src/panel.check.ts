@@ -33,7 +33,7 @@ const detail = {
 }
 
 const sample = {
-  capabilities: ['workspace:read', 'settings:own', 'secrets:own', 'terminal:send', 'storage:own', 'agent:launch'],
+  capabilities: ['workspace:read', 'workspace:write', 'workspace:create', 'settings:own', 'secrets:own', 'terminal:send', 'storage:own', 'agent:launch'],
   requests: {
     'redmine.status': () => ({ configured: true, url: 'https://redmine.example.com', user: { login: 'ana', name: 'Ana García' } }),
     'redmine.issues': () => ({ issues, total: 12 }),
@@ -48,6 +48,7 @@ const sample = {
     }),
     'redmine.orcaProjects': () => [{ id: 'git:shop', name: 'shop' }],
     'redmine.launchHereSupport': () => ({ available: true }),
+    'redmine.openWorkspaceSupport': () => ({ available: true }),
     'redmine.counts': () => ({ total: 12, overdue: 2, urgent: 1 }),
     'redmine.agentStates': () => ({ '4077': 'working', '4081': 'permission' })
   },
@@ -131,5 +132,33 @@ export default defineCheck({
     ...sample,
     settings: { url: 'http://127.0.0.1:9', statusBar: true, statusBarMinutes: 5 },
     secrets: { apiKey: 'x' }
+  },
+  // "Go to workspace": the task is also linked to a workspace other than the focused one, from the
+  // task detail and from an agent follow-up.
+  openWorkspace: {
+    ...sample,
+    requests: {
+      ...sample.requests,
+      'redmine.followups.get': () => ({
+        followups: [
+          {
+            id: 'agentDone:4077:3',
+            kind: 'agentDone' as const,
+            issueId: 4077,
+            workspaceName: '4077-checkout-screen',
+            at: Date.parse('2026-11-03T07:30:00Z')
+          }
+        ]
+      })
+    },
+    persisted: {
+      plugin: {
+        'redmine.projectByOrcaProject': { 'git:shop': 'shop' },
+        'redmine.issueByWorkspace': {
+          'wt-1': { id: 4077, subject: 'Checkout screen with saved cards' },
+          'wt-2': { id: 4077, subject: 'Checkout screen with saved cards' }
+        }
+      }
+    }
   }
 })

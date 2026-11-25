@@ -2,9 +2,12 @@
 // cannot carry it) and whether the `redmine` CLI (redmine-cli) is installed, so the agent can update
 // the task itself. Reading the task never needs the CLI.
 
-const REDMINE_CLI_CANDIDATES = [process.env.REDMINE_CLI, 'redmine', '/opt/homebrew/bin/redmine', '/usr/local/bin/redmine'].filter(
-  (c): c is string => Boolean(c)
-)
+// Read lazily, so importing this module never needs `process`.
+function redmineCliCandidates(): string[] {
+  return [process.env.REDMINE_CLI, 'redmine', '/opt/homebrew/bin/redmine', '/usr/local/bin/redmine'].filter(
+    (c): c is string => Boolean(c)
+  )
+}
 
 let detected: { at: number; version: Promise<string | null> } | null = null
 
@@ -13,7 +16,7 @@ export function detectRedmineCli(): Promise<string | null> {
   if (detected && Date.now() - detected.at < 60_000) return detected.version
   const version = (async () => {
     const { execFile } = await import('node:child_process')
-    for (const cli of REDMINE_CLI_CANDIDATES) {
+    for (const cli of redmineCliCandidates()) {
       const found = await new Promise<string | null>((resolve) => {
         execFile(cli, ['--version'], { timeout: 5_000 }, (err, out) => resolve(err ? null : String(out).trim() || cli))
       })

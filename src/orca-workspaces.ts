@@ -217,15 +217,18 @@ export function matchHostWorkspace(rows: readonly HostWorkspaceRow[], context: F
   return id ? keyFromHostId(id) : null
 }
 
-const CLI_CANDIDATES = [process.env.ORCA_CLI, 'orca', '/usr/local/bin/orca', '/opt/homebrew/bin/orca'].filter(
-  (c): c is string => Boolean(c)
-)
+// Read lazily: the panel imports this module too, and it runs where `process` does not exist.
+function cliCandidates(): string[] {
+  return [process.env.ORCA_CLI, 'orca', '/usr/local/bin/orca', '/opt/homebrew/bin/orca'].filter((c): c is string =>
+    Boolean(c)
+  )
+}
 
 /** Runs `orca <args> --json` and returns `result`. Failures throw RedmineError('orca_cli' | 'timeout'). */
 export async function runOrcaJson(args: string[], timeoutMs = 10_000): Promise<any> {
   const { execFile } = await import('node:child_process')
   let lastError: unknown
-  for (const cli of CLI_CANDIDATES) {
+  for (const cli of cliCandidates()) {
     try {
       const stdout = await new Promise<string>((resolve, reject) => {
         execFile(cli, [...args, '--json'], { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024 }, (err, out) =>

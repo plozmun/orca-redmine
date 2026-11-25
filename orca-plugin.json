@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "redmine-tasks",
   "name": "Redmine",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "license": "MIT",
   "description": "Your Redmine tasks in Orca's sidebar, linked to workspaces and agents.",
   "icon": "assets/icon.png",
